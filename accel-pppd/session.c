@@ -73,6 +73,7 @@ void __export ap_session_set_ifindex(struct ap_session *ses)
 {
 	struct rtnl_link_stats stats;
 
+	net = ses->net;
 	if (iplink_get_stats(ses->ifindex, &stats))
 		log_ppp_warn("failed to get interface statistics\n");
 	else {
@@ -386,6 +387,7 @@ int __export ap_session_read_stats(struct ap_session *ses, struct rtnl_link_stat
 	if (!stats)
 		stats = &lstats;
 
+	net = ses->net;
 	if (iplink_get_stats(ses->ifindex, stats)) {
 		log_ppp_warn("failed to get interface statistics\n");
 		return -1;
