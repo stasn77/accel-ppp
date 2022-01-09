@@ -7,6 +7,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/inetdevice.h>
+#include <linux/idr.h>
 #include <linux/in.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
@@ -63,6 +64,8 @@ struct ipoe_stats {
 	u64 bytes;
 };
 
+struct ida ses_ida;
+
 struct ipoe_session {
 	struct list_head entry; //ipoe_list
 	struct list_head entry2; //ipoe_list2
@@ -80,6 +83,7 @@ struct ipoe_session {
 	struct net_device *dev;
 	struct net_device *link_dev;
 
+	int ida;
 	atomic_t refs;
 
 	struct ipoe_stats __percpu *rx_stats;
@@ -1095,7 +1099,6 @@ static void ipoe_netdev_setup(struct net_device *dev)
 	dev->iflink = 0;
 #endif
 	dev->addr_len = ETH_ALEN;
-	dev->features  |= NETIF_F_NETNS_LOCAL;
 	dev->features  &= ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
 	dev->header_ops	= &ipoe_hard_header_ops;
 	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
@@ -1106,6 +1109,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	struct ipoe_session *ses;
 	struct net_device *dev, *link_dev = NULL;
 	char name[IFNAMSIZ];
+	int ida;
 	int r = -EINVAL;
 	int h = hash_addr(peer_addr);
 	//struct in_device *in_dev;
@@ -1116,10 +1120,13 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 			return -EINVAL;
 	}
 
-	sprintf(name, "ipoe%%d");
+	ida = ida_alloc(&ses_ida, GFP_ATOMIC);
+	if (ida < 0)
+		goto failed;
+	sprintf(name, "ipoe%d", ida);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
-	dev = alloc_netdev(sizeof(*ses), name, NET_NAME_UNKNOWN, ipoe_netdev_setup);
+	dev = alloc_netdev(sizeof(*ses), name, NET_NAME_ENUM, ipoe_netdev_setup);
 #else
 	dev = alloc_netdev(sizeof(*ses), name, ipoe_netdev_setup);
 #endif
@@ -1139,6 +1146,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	ses = netdev_priv(dev);
 	memset(ses, 0, sizeof(*ses));
 	atomic_set(&ses->refs, 0);
+	ses->ida = ida;
 	ses->dev = dev;
 	ses->addr = addr;
 	ses->peer_addr = peer_addr;
@@ -1196,6 +1204,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	return r;
 
 failed_free:
+	ida_free(&ses_ida, ida);
 	free_netdev(dev);
 failed:
 	if (link_dev)
@@ -1360,6 +1369,8 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 
 	if (ses->link_dev)
 		dev_put(ses->link_dev);
+
+	ida_free(&ses_ida, ses->ida);
 
 	unregister_netdev(ses->dev);
 
@@ -1895,6 +1906,8 @@ static int __init ipoe_init(void)
 	if (err < 0)
 		return err;*/
 
+	ida_init(&ses_ida);
+
 	for (i = 0; i <= IPOE_HASH_BITS; i++) {
 		INIT_LIST_HEAD(&ipoe_list[i]);
 		INIT_LIST_HEAD(&ipoe_list3[i]);
@@ -1988,6 +2001,8 @@ static void __exit ipoe_fini(void)
 	}
 
 	clean_excl_list();
+
+	ida_destroy(&ses_ida);
 
 	synchronize_rcu();
 }
