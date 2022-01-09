@@ -721,7 +721,7 @@ static struct ipoe_session *ipoe_lookup(__be32 addr)
 	return NULL;
 }
 
-static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr)
+static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *dev, __be32 addr)
 {
 	struct ipoe_session *ses;
 	struct list_head *head;
@@ -738,7 +738,9 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr)
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(ses, head, entry3) {
-		if (ses->u.hwaddr_u == u.hwaddr_u) {
+		if (ses->u.hwaddr_u == u.hwaddr_u &&
+		   (!dev || ses->link_dev == dev) &&
+		   (!addr || ses->peer_addr == addr)) {
 			atomic_inc(&ses->refs);
 			rcu_read_unlock();
 			return ses;
@@ -750,10 +752,8 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr)
 	return NULL;
 }
 
-
-static struct ipoe_session *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr, struct net_device **dev)
+static struct ipoe_session *ipoe_lookup_rt4(struct net *net, __be32 addr, struct net_device **dev, int oif)
 {
-	struct net *net = pick_net(skb);
 	struct rtable *rt;
 	struct ipoe_session *ses;
 
@@ -761,6 +761,7 @@ static struct ipoe_session *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr, st
 
 	memset(&fl4, 0, sizeof(fl4));
 	fl4.daddr = addr;
+	fl4.flowi4_oif = oif;
 	fl4.flowi4_tos = RT_TOS(0);
 	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
 	rt = ip_route_output_key(net, &fl4);
@@ -843,7 +844,17 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 		if (!saddr || saddr == 0xffffffff)
 			return RX_HANDLER_PASS;
 
-		ses = ipoe_lookup_rt4(skb, saddr, &out);
+		if (i->mode < 3)
+			ses = ipoe_lookup_hwaddr(eth->h_source, dev, saddr);
+		else
+			ses = ipoe_lookup(saddr);
+		if (!ses)
+			ses = ipoe_lookup_rt4(pick_net(skb), saddr, &out, netif_is_l3_slave(dev) ? dev->ifindex : 0);
+		else {
+			atomic_dec(&ses->refs);
+			ses = ipoe_lookup_rt4(dev_net(ses->dev), saddr, &out, netif_is_l3_slave(ses->dev) ? ses->dev->ifindex : 0);
+		}
+
 		if (!ses) {
 			if (i->mode == 0)
 				return RX_HANDLER_PASS;
@@ -874,7 +885,7 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 		ip6h = ipv6_hdr(skb);
 
 		if (ip6h->saddr.s6_addr16[0] == htons(0xfe80)) {
-			ses = ipoe_lookup_hwaddr(eth->h_source);
+			ses = ipoe_lookup_hwaddr(eth->h_source, NULL, 0);
 			if (!ses)
 				return RX_HANDLER_PASS;
 		} else {
