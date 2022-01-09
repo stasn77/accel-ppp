@@ -1141,7 +1141,7 @@ static void ipoe_session_started(struct ap_session *s)
 		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
 		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
 
-	if (ses->ifindex != -1 && ses->xid) {
+	if (ses->ses.net == def_net && ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
 		if (!ses->dhcpv4) {
 			//terminate
@@ -1200,6 +1200,17 @@ static void ipoe_session_finished(struct ap_session *s)
 	log_ppp_info1("ipoe: session finished\n");
 
 	if (ses->ifindex != -1) {
+		if (s->vrf_name)
+			ap_session_vrf(s, NULL, 0);
+		if (s->net != def_net) {
+			struct ap_net *pnet = s->net;
+			if (!net->move_link(def_net, s->ifindex)) {
+				pnet->release(pnet);
+				net = s->net = def_net;
+				ses->ifindex = s->ifindex = net->get_ifindex(s->ifname);
+			} else
+				log_ppp_warn("failed to attach to default namespace, %s\n", s->ifname);
+		}
 		if (uc_size < conf_unit_cache) {
 			strcpy(ifr.ifr_name, s->ifname);
 			ioctl(sock_fd, SIOCGIFFLAGS, &ifr);
