@@ -150,12 +150,12 @@ static void ipoe_start_queue_work(unsigned long);
 static DEFINE_TIMER(ipoe_timer_u, ipoe_start_queue_work, 0, 0);
 #endif
 
-static struct ipoe_session *ipoe_lookup(__be32 addr);
+static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev);
 static int ipoe_do_nat(struct sk_buff *skb, __be32 new_addr, int to_peer);
 static int ipoe_queue_u(struct sk_buff *skb, __be32 addr);
 static int ipoe_lookup1_u(__be32 addr, unsigned long *ts);
 
-static struct net *pick_net(struct sk_buff *skb);
+static inline struct net *pick_net(struct sk_buff *skb);
 
 static const struct net_device_ops ipoe_netdev_ops;
 
@@ -394,7 +394,7 @@ static int ipoe_do_nat(struct sk_buff *skb, __be32 new_addr, int to_peer)
 	return 0;
 }
 
-static struct net *pick_net(struct sk_buff *skb)
+static inline struct net *pick_net(struct sk_buff *skb)
 {
 #ifdef CONFIG_NET_NS
 	const struct dst_entry *dst;
@@ -708,7 +708,7 @@ nl_err:
 		del_timer(&ipoe_timer_u);
 }
 
-static struct ipoe_session *ipoe_lookup(__be32 addr)
+static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev)
 {
 	struct ipoe_session *ses;
 	struct list_head *head;
@@ -718,7 +718,8 @@ static struct ipoe_session *ipoe_lookup(__be32 addr)
 	rcu_read_lock();
 
 	list_for_each_entry_rcu(ses, head, entry) {
-		if (ses->peer_addr == addr) {
+		if (ses->peer_addr == addr &&
+		   (!dev || (ses->link_dev == dev))) {
 			atomic_inc(&ses->refs);
 			rcu_read_unlock();
 			return ses;
@@ -752,35 +753,23 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *
 	return NULL;
 }
 
-static struct ipoe_session *ipoe_lookup_rt4(struct net *net, __be32 addr, struct net_device **dev, int oif)
+static struct net_device *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr)
 {
-	struct rtable *rt;
-	struct ipoe_session *ses;
+	struct net_device *out = NULL;
+	struct net *net = pick_net(skb);
 
-	struct flowi4 fl4;
+	struct flowi4 fl4 = {
+		.daddr = addr,
+		.flowi4_tos = RT_TOS(0),
+		.flowi4_scope = RT_SCOPE_UNIVERSE,
+	};
+	struct rtable *rt = ip_route_output_key_hash(net, &fl4, NULL);
 
-	memset(&fl4, 0, sizeof(fl4));
-	fl4.daddr = addr;
-	fl4.flowi4_oif = oif;
-	fl4.flowi4_tos = RT_TOS(0);
-	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
-	rt = ip_route_output_key(net, &fl4);
-	if (IS_ERR(rt))
-		return NULL;
-
-	*dev      = rt->dst.dev;
-
-	if ((*dev)->netdev_ops != &ipoe_netdev_ops) {
+	if (!IS_ERR(rt)) {
+		out = rt->dst.dev;
 		ip_rt_put(rt);
-		return NULL;
 	}
-
-	ses = netdev_priv(*dev);
-	atomic_inc(&ses->refs);
-
-	ip_rt_put(rt);
-
-	return ses;
+	return out;
 }
 
 static struct ipoe_session *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_addr *addr, struct net_device **dev)
@@ -810,6 +799,18 @@ static struct ipoe_session *ipoe_lookup_rt6(struct sk_buff *skb, const struct in
 	dst_release(dst);
 
 	return ses;
+}
+
+static inline bool is_unnumbered(struct net_device *dev, __be32 addr)
+{
+	struct in_ifaddr *ifa;
+
+	for(ifa = rcu_dereference(dev->ip_ptr->ifa_list);
+		ifa; ifa = rcu_dereference(ifa->ifa_next))
+		if (ifa->ifa_address == addr && ifa->ifa_prefixlen == 32)
+			return true;
+
+	return false;
 }
 
 static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
@@ -844,20 +845,18 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 		if (!saddr || saddr == 0xffffffff)
 			return RX_HANDLER_PASS;
 
-		if (i->mode < 3)
+		if (i->mode < 3) {
+			if (is_unnumbered(dev, saddr))
+				return RX_HANDLER_PASS;
 			ses = ipoe_lookup_hwaddr(eth->h_source, dev, saddr);
-		else
-			ses = ipoe_lookup(saddr);
-		if (!ses)
-			ses = ipoe_lookup_rt4(pick_net(skb), saddr, &out, netif_is_l3_slave(dev) ? dev->ifindex : 0);
-		else {
-			atomic_dec(&ses->refs);
-			ses = ipoe_lookup_rt4(dev_net(ses->dev), saddr, &out, netif_is_l3_slave(ses->dev) ? ses->dev->ifindex : 0);
-		}
+		} else
+			ses = ipoe_lookup(saddr, dev);
 
 		if (!ses) {
 			if (i->mode == 0)
 				return RX_HANDLER_PASS;
+
+			out = ipoe_lookup_rt4(skb, saddr);
 
 			if (out == dev && i->mode == 2)
 				return RX_HANDLER_PASS;
@@ -1115,21 +1114,15 @@ static void ipoe_netdev_setup(struct net_device *dev)
 	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
 }
 
-static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, const __u8 *hwaddr)
+static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_device *link_dev, const __u8 *hwaddr)
 {
 	struct ipoe_session *ses;
-	struct net_device *dev, *link_dev = NULL;
+	struct net_device *dev;
 	char name[IFNAMSIZ];
 	int ida;
 	int r = -EINVAL;
 	int h = hash_addr(peer_addr);
 	//struct in_device *in_dev;
-
-	if (ifindex) {
-		link_dev = dev_get_by_index(&init_net, ifindex);
-		if (!link_dev)
-			return -EINVAL;
-	}
 
 	ida = ida_alloc(&ses_ida, GFP_ATOMIC);
 	if (ida < 0)
@@ -1267,21 +1260,14 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 	void *hdr;
 	__be32 peer_addr = 0, addr = 0, gw = 0;
 	int ifindex = 0;
+	struct net_device *link_dev = NULL;
 	int ret = 0;
 	__u8 hwaddr[ETH_ALEN];
 	struct ipoe_session *ses;
 	//struct net *net = genl_info_net(info);
 
-	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
+	if (info->attrs[IPOE_ATTR_PEER_ADDR])
 		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
-		if (peer_addr) {
-			ses = ipoe_lookup(peer_addr);
-			if (ses) {
-				atomic_dec(&ses->refs);
-				return -EEXIST;
-			}
-		}
-	}
 
 	if (info->attrs[IPOE_ATTR_ADDR])
 		addr = nla_get_be32(info->attrs[IPOE_ATTR_ADDR]);
@@ -1291,6 +1277,20 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 
 	if (info->attrs[IPOE_ATTR_IFINDEX])
 		ifindex = nla_get_u32(info->attrs[IPOE_ATTR_IFINDEX]);
+
+	if (ifindex) {
+		link_dev = dev_get_by_index(&init_net, ifindex);
+		if (!link_dev)
+			return -EINVAL;
+	}
+
+	if (peer_addr) {
+		ses = ipoe_lookup(peer_addr, link_dev);
+		if (ses) {
+			atomic_dec(&ses->refs);
+			return -EEXIST;
+		}
+	}
 
 	if (info->attrs[IPOE_ATTR_HWADDR])
 		nla_memcpy(hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
@@ -1315,7 +1315,7 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 
 	//pr_info("ipoe: create %08x %08x %s\n", peer_addr, addr, info->attrs[IPOE_ATTR_IFNAME] ? ifname : "-");
 
-	ret = ipoe_create(peer_addr, addr, gw, ifindex, hwaddr);
+	ret = ipoe_create(peer_addr, addr, gw, link_dev, hwaddr);
 
 	if (ret < 0) {
 		nlmsg_free(msg);
@@ -1420,32 +1420,6 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 
 	ses = netdev_priv(dev);
 
-	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
-		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
-		if (peer_addr) {
-			ses1 = ipoe_lookup(peer_addr);
-			if (ses1) {
-				atomic_dec(&ses1->refs);
-				if (ses1 != ses) {
-					ret = -EEXIST;
-					goto out_unlock;
-				}
-			}
-		}
-
-		if (ses->peer_addr) {
-			list_del_rcu(&ses->entry);
-			synchronize_rcu();
-		}
-
-		ses->peer_addr = peer_addr;
-
-		if (peer_addr)
-			list_add_tail_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
-		else
-			ses->dev->flags &= ~IFF_UP;
-	}
-
 	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
 		int ifindex = nla_get_u32(info->attrs[IPOE_ATTR_LINK_IFINDEX]);
 
@@ -1473,6 +1447,33 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			ether_addr_copy(dev->broadcast, link_dev->broadcast);
 		}
 	}
+
+	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
+		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
+		if (peer_addr) {
+			ses1 = ipoe_lookup(peer_addr, link_dev);
+			if (ses1) {
+				atomic_dec(&ses1->refs);
+				if (ses1 != ses) {
+					ret = -EEXIST;
+					goto out_unlock;
+				}
+			}
+		}
+
+		if (ses->peer_addr) {
+			list_del_rcu(&ses->entry);
+			synchronize_rcu();
+		}
+
+		ses->peer_addr = peer_addr;
+
+		if (peer_addr)
+			list_add_tail_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
+		else
+			ses->dev->flags &= ~IFF_UP;
+	}
+
 
 	if (info->attrs[IPOE_ATTR_ADDR]) {
 		ses->addr = nla_get_be32(info->attrs[IPOE_ATTR_ADDR]);
