@@ -39,7 +39,8 @@
 #define UPDATE 2
 #define END_UPDATE 3
 
-#define IPOE_HASH_BITS 0xff
+#define IPOE_HASH_SHIFT 8
+#define IPOE_HASH_BITS (1<<IPOE_HASH_SHIFT)
 
 #define IPOE_MAGIC 0x55aa
 #define IPOE_MAGIC2 0x67f8bc32
@@ -69,16 +70,13 @@ struct ida ses_ida;
 struct ipoe_session {
 	struct list_head entry; //ipoe_list
 	struct list_head entry2; //ipoe_list2
-	struct list_head entry3; //ipoe_list3
+	struct hlist_node entry3; //ipoe_list3
 
 	__be32 addr;
 	__be32 peer_addr;
 	__be32 gw;
 
-	union {
-		__u8 hwaddr[ETH_ALEN];
-		__u64 hwaddr_u;
-	} u;
+	u8 hwaddr[ETH_ALEN] __aligned(sizeof(u16));
 
 	struct net_device *dev;
 	struct net_device *link_dev;
@@ -115,7 +113,6 @@ struct ipoe_entry_u {
 	unsigned long tstamp;
 };
 
-
 struct _arphdr {
 	__be16		ar_hrd;		/* format of hardware address	*/
 	__be16		ar_pro;		/* format of protocol address	*/
@@ -132,9 +129,8 @@ struct _arphdr {
 	__be32		ar_tip;		/* target IP address		*/
 } __packed;
 
-
 static struct list_head ipoe_list[IPOE_HASH_BITS + 1];
-static struct list_head ipoe_list3[IPOE_HASH_BITS + 1];
+static struct hlist_head ipoe_list3[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_list1_u[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_excl_list[IPOE_HASH_BITS + 1];
 static LIST_HEAD(ipoe_list2);
@@ -144,7 +140,6 @@ static LIST_HEAD(ipoe_interfaces);
 static LIST_HEAD(ipoe_networks);
 static struct work_struct ipoe_queue_work;
 static struct sk_buff_head ipoe_queue;
-
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
@@ -189,6 +184,20 @@ static inline int hash_addr(__be32 addr)
 #else
 	return (addr  ^ (addr >> 8)) & IPOE_HASH_BITS;
 #endif
+}
+
+/* Hash Ethernet address */
+static inline u32 eth_hash(const __u8 *addr)
+{
+	u64 value = get_unaligned((u64 *)addr);
+
+	/* only want 6 bytes */
+#ifdef __BIG_ENDIAN
+	value >>= 16;
+#else
+	value <<= 16;
+#endif
+	return hash_64(value, IPOE_HASH_SHIFT);
 }
 
 static void ipoe_update_stats(struct sk_buff *skb, struct ipoe_stats *st, int corr)
@@ -495,8 +504,8 @@ static netdev_tx_t ipoe_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	if (ses->link_dev) {
 		struct ethhdr *eth = (struct ethhdr *)skb->data;
-		memcpy(eth->h_dest, ses->u.hwaddr, ETH_ALEN);
-		memcpy(eth->h_source, ses->link_dev->dev_addr, ETH_ALEN);
+		ether_addr_copy(eth->h_dest, ses->hwaddr);
+		ether_addr_copy(eth->h_source, ses->link_dev->dev_addr);
 
 		skb->dev = ses->link_dev;
 		dev_queue_xmit(skb);
@@ -724,23 +733,14 @@ static struct ipoe_session *ipoe_lookup(__be32 addr)
 static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *dev, __be32 addr)
 {
 	struct ipoe_session *ses;
-	struct list_head *head;
-	union {
-		__u8 hwaddr[ETH_ALEN];
-		__u64 hwaddr_u;
-	} u;
-
-	u.hwaddr_u = 0;
-	memcpy(u.hwaddr, hwaddr, ETH_ALEN);
-
-	head = &ipoe_list3[hwaddr[ETH_ALEN - 1]];
+	u32 idx = eth_hash(hwaddr);
 
 	rcu_read_lock();
 
-	list_for_each_entry_rcu(ses, head, entry3) {
-		if (ses->u.hwaddr_u == u.hwaddr_u &&
-		   (!dev || ses->link_dev == dev) &&
-		   (!addr || ses->peer_addr == addr)) {
+	hlist_for_each_entry_rcu(ses, &ipoe_list3[idx], entry3) {
+		if (ether_addr_equal_64bits(ses->hwaddr, hwaddr) &&
+		   (!dev || (ses->link_dev == dev)) &&
+		   (!addr || (ses->peer_addr == addr))) {
 			atomic_inc(&ses->refs);
 			rcu_read_unlock();
 			return ses;
@@ -910,8 +910,8 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 	stats = &ses->dev->stats;
 
 	if (ses->gw)
-		memcpy(ses->u.hwaddr, eth->h_source, ETH_ALEN);
-	else if (memcmp(eth->h_source, ses->u.hwaddr, ETH_ALEN))
+		ether_addr_copy(ses->hwaddr, eth->h_source);
+	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr))
 		goto drop;
 
 	if (skb->protocol == htons(ETH_P_IP) && ses->addr > 1 && check_nat_required(skb, ses->link_dev) && ipoe_do_nat(skb, ses->addr, 0))
@@ -1163,7 +1163,8 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	ses->peer_addr = peer_addr;
 	ses->gw = gw;
 	ses->link_dev = link_dev;
-	memcpy(ses->u.hwaddr, hwaddr, ETH_ALEN);
+	ether_addr_copy(ses->hwaddr, hwaddr);
+	
 	ses->rx_stats = alloc_percpu(struct ipoe_stats);
 	ses->tx_stats = alloc_percpu(struct ipoe_stats);
 	if (!ses->rx_stats || !ses->tx_stats) {
@@ -1173,8 +1174,8 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 
 	if (link_dev) {
 		dev->features = link_dev->features & ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
-		memcpy(dev->dev_addr, link_dev->dev_addr, ETH_ALEN);
-		memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
+		ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
+		ether_addr_copy(dev->broadcast, link_dev->broadcast);
 	}
 
 	if (addr)
@@ -1208,7 +1209,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 		list_add_tail_rcu(&ses->entry, &ipoe_list[h]);
 	list_add_tail(&ses->entry2, &ipoe_list2);
 	if (link_dev)
-		list_add_tail_rcu(&ses->entry3, &ipoe_list3[ses->u.hwaddr[ETH_ALEN - 1]]);
+		hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	r = dev->ifindex;
 	up(&ipoe_wlock);
 
@@ -1294,7 +1295,7 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[IPOE_ATTR_HWADDR])
 		nla_memcpy(hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
 	else
-		memset(hwaddr, 0, sizeof(hwaddr));
+		eth_zero_addr(hwaddr);
 
 	msg = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (!msg) {
@@ -1368,8 +1369,8 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 	if (ses->peer_addr)
 		list_del_rcu(&ses->entry);
 	list_del(&ses->entry2);
-	if (ses->u.hwaddr_u)
-		list_del_rcu(&ses->entry3);
+	if (!is_zero_ether_addr(ses->hwaddr))
+		hlist_del_rcu(&ses->entry3);
 
 	up(&ipoe_wlock);
 
@@ -1461,15 +1462,15 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 
 		if (old_dev) {
 			dev_put(old_dev);
-			list_del_rcu(&ses->entry3);
-			ses->u.hwaddr_u = 0;
+			hlist_del_rcu(&ses->entry3);
+			eth_zero_addr(ses->hwaddr);
 			synchronize_rcu();
 		}
 
 		if (link_dev) {
 			ses->dev->features = link_dev->features & ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
-			memcpy(dev->dev_addr, link_dev->dev_addr, ETH_ALEN);
-			memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
+			ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
+			ether_addr_copy(dev->broadcast, link_dev->broadcast);
 		}
 	}
 
@@ -1493,9 +1494,9 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 		ses->gw = nla_get_u32(info->attrs[IPOE_ATTR_GW_ADDR]);
 
 	if (info->attrs[IPOE_ATTR_HWADDR]) {
-		nla_memcpy(ses->u.hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
+		nla_memcpy(ses->hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
 		if (ses->link_dev)
-			list_add_tail_rcu(&ses->entry3, &ipoe_list3[ses->u.hwaddr[ETH_ALEN - 1]]);
+			hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	}
 
 	//pr_info("ipoe: modify %08x %08x\n", ses->peer_addr, ses->addr);
@@ -1921,7 +1922,7 @@ static int __init ipoe_init(void)
 
 	for (i = 0; i <= IPOE_HASH_BITS; i++) {
 		INIT_LIST_HEAD(&ipoe_list[i]);
-		INIT_LIST_HEAD(&ipoe_list3[i]);
+		INIT_HLIST_HEAD(&ipoe_list3[i]);
 		INIT_LIST_HEAD(&ipoe_list1_u[i]);
 		INIT_LIST_HEAD(&ipoe_excl_list[i]);
 	}
