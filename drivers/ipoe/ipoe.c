@@ -68,7 +68,7 @@ struct ipoe_stats {
 struct ida ses_ida;
 
 struct ipoe_session {
-	struct list_head entry; //ipoe_list
+	struct hlist_node entry; //ipoe_list
 	struct list_head entry2; //ipoe_list2
 	struct hlist_node entry3; //ipoe_list3
 
@@ -129,7 +129,7 @@ struct _arphdr {
 	__be32			ar_tip;			/* target IP address		*/
 } __packed;
 
-static struct list_head ipoe_list[IPOE_HASH_BITS + 1];
+static struct hlist_head ipoe_list[IPOE_HASH_BITS + 1];
 static struct hlist_head ipoe_list3[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_list1_u[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_excl_list[IPOE_HASH_BITS + 1];
@@ -177,13 +177,11 @@ static struct genl_multicast_group ipoe_nl_mcg;
 #define nla_nest_start_noflag(skb, attr) nla_nest_start(skb, attr)
 #endif
 
-static inline int hash_addr(__be32 addr)
+static inline u32 hash_addr(__be32 addr)
 {
-#ifdef __LITTLE_ENDIAN
-	return ((addr >> 24) ^ (addr >> 16)) & IPOE_HASH_BITS;
-#else
-	return (addr  ^ (addr >> 8)) & IPOE_HASH_BITS;
-#endif
+    u32 val = (__force u32) addr;
+
+    return hash_32(val, IPOE_HASH_SHIFT);
 }
 
 /* Hash Ethernet address */
@@ -644,13 +642,11 @@ nl_err:
 static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev)
 {
 	struct ipoe_session *ses;
-	struct list_head *head;
-
-	head = &ipoe_list[hash_addr(addr)];
+	u32 idx = hash_addr(addr);
 
 	rcu_read_lock();
 
-	list_for_each_entry_rcu(ses, head, entry) {
+	hlist_for_each_entry_rcu(ses, &ipoe_list[idx], entry) {
 		if (ses->peer_addr == addr &&
 		   (!dev || (ses->link_dev == dev))) {
 			atomic_inc(&ses->refs);
@@ -734,7 +730,7 @@ static struct ipoe_session *ipoe_lookup_rt6(struct sk_buff *skb, const struct in
 	return ses;
 }
 
-static inline bool is_unnumbered(struct net_device *dev, __be32 addr)
+static bool is_unnumbered(struct net_device *dev, __be32 addr)
 {
 	struct in_ifaddr *ifa;
 
@@ -1058,7 +1054,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 
 	down(&ipoe_wlock);
 	if (peer_addr)
-		list_add_tail_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
+		hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
 	list_add_tail(&ses->entry2, &ipoe_list2);
 	if (link_dev)
 		hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
@@ -1221,7 +1217,7 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 	ses = netdev_priv(dev);
 
 	if (ses->peer_addr)
-		list_del_rcu(&ses->entry);
+		hlist_del_rcu(&ses->entry);
 	list_del(&ses->entry2);
 	if (!is_zero_ether_addr(ses->hwaddr))
 		hlist_del_rcu(&ses->entry3);
@@ -1316,14 +1312,14 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 		}
 
 		if (ses->peer_addr) {
-			list_del_rcu(&ses->entry);
+			hlist_del_rcu(&ses->entry);
 			synchronize_rcu();
 		}
 
 		ses->peer_addr = peer_addr;
 
 		if (peer_addr)
-			list_add_tail_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
+			hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
 		else
 			ses->dev->flags &= ~IFF_UP;
 	}
@@ -1763,7 +1759,7 @@ static int __init ipoe_init(void)
 	ida_init(&ses_ida);
 
 	for (i = 0; i <= IPOE_HASH_BITS; i++) {
-		INIT_LIST_HEAD(&ipoe_list[i]);
+		INIT_HLIST_HEAD(&ipoe_list[i]);
 		INIT_HLIST_HEAD(&ipoe_list3[i]);
 		INIT_LIST_HEAD(&ipoe_list1_u[i]);
 		INIT_LIST_HEAD(&ipoe_excl_list[i]);
@@ -1801,7 +1797,6 @@ static void __exit ipoe_fini(void)
 	struct ipoe_entry_u *e;
 	struct ipoe_session *ses;
 	struct net_device *dev;
-	int i;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0) && RHEL_MAJOR < 7
 	genl_unregister_mc_group(&ipoe_nl_family, &ipoe_nl_mcg);
@@ -1832,9 +1827,6 @@ static void __exit ipoe_fini(void)
 	skb_queue_purge(&ipoe_queue);
 
 	del_timer(&ipoe_timer_u);
-
-	for (i = 0; i <= IPOE_HASH_BITS; i++)
-		rcu_assign_pointer(ipoe_list[i].next, &ipoe_list[i]);
 
 	rcu_barrier();
 
