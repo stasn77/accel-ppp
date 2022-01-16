@@ -34,6 +34,7 @@ struct kern_net {
 	int ns_fd;
 	int sock;
 	int sock6;
+	int rsock;
 };
 
 static const char *conf_netns_run_dir;
@@ -48,9 +49,33 @@ static int def_ns_fd;
 __export int conf_nl_rcvbuf = 1024 * 1024;
 __export int conf_nl_sndbuf = -1;
 
+static void enter_ns()
+{
+#ifdef SYS_setns
+	if (net != def_net) {
+		struct kern_net *n = container_of(net, typeof(*n), net);
+		setns(n->ns_fd, CLONE_NEWNET);
+	}
+#endif
+}
+
+static void exit_ns()
+{
+#ifdef SYS_setns
+	if (net != def_net)
+		setns(def_ns_fd, CLONE_NEWNET);
+#endif
+}
+
 static int def_socket(int domain, int type, int proto)
 {
-	return socket(domain, type, proto);
+	int s;
+
+	enter_ns();
+	s = socket(domain, type, proto);
+	exit_ns();
+
+	return s;
 }
 
 static int def_connect(int sock, const struct sockaddr *addr, socklen_t len)
@@ -71,6 +96,11 @@ static int def_listen(int sock, int backlog)
 static ssize_t def_read(int sock, void *buf, size_t len)
 {
 	return read(sock, buf, len);
+}
+
+static ssize_t def_recvmsg(int sock, struct msghdr *msg, int flags)
+{
+	return recvmsg(sock, msg, flags);
 }
 
 static ssize_t def_recvfrom(int sock, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen)
@@ -108,36 +138,18 @@ static int def_ppp_ioctl(int fd, unsigned long request, void *arg)
 	return ioctl(fd, request, arg);
 }
 
-static int def_sock_ioctl(unsigned long request, void *arg)
+static int def_sock_ioctl(unsigned long request, void *arg, ...)
 {
 	struct kern_net *n = container_of(net, typeof(*n), net);
 
 	return ioctl(n->sock, request, arg);
 }
 
-static int def_sock6_ioctl(unsigned long request, void *arg)
+static int def_sock6_ioctl(unsigned long request, void *arg, ...)
 {
 	struct kern_net *n = container_of(net, typeof(*n), net);
 
 	return ioctl(n->sock6, request, arg);
-}
-
-static void enter_ns()
-{
-#ifdef SYS_setns
-	if (net != def_net) {
-		struct kern_net *n = container_of(net, typeof(*n), net);
-		setns(n->ns_fd, CLONE_NEWNET);
-	}
-#endif
-}
-
-static void exit_ns()
-{
-#ifdef SYS_setns
-	if (net != def_net)
-		setns(def_ns_fd, CLONE_NEWNET);
-#endif
 }
 
 static struct rtnl_handle *def_rtnl_get()
@@ -173,7 +185,6 @@ static void def_rtnl_put(struct rtnl_handle *rth)
 
 static int def_rtnl_open(struct rtnl_handle *rth, int proto)
 {
-	struct kern_net *n = container_of(net, typeof(*n), net);
 	int r;
 
 	enter_ns();
@@ -295,6 +306,7 @@ static void def_release(struct ap_net *d)
 
 	close(n->sock);
 	close(n->sock6);
+	close(n->rsock);
 	close(n->ns_fd);
 
 	if (n->rth) {
@@ -342,6 +354,7 @@ static struct ap_net *alloc_net(const char *name)
 	net->bind = def_bind;
 	net->listen = def_listen;
 	net->read = def_read;
+	net->recvmsg = def_recvmsg;
 	net->recvfrom = def_recvfrom;
 	net->write = def_write;
 	net->sendto = def_sendto;
@@ -365,6 +378,7 @@ static struct ap_net *alloc_net(const char *name)
 
 	n->sock = socket(AF_INET, SOCK_DGRAM, 0);
 	n->sock6 = socket(AF_INET6, SOCK_DGRAM, 0);
+	net->rsock = n->rsock = socket(AF_PACKET, SOCK_RAW, 0);
 	n->rth = _malloc(sizeof(*n->rth));
 	rtnl_open(n->rth, 0);
 
