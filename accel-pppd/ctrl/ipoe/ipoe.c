@@ -582,7 +582,7 @@ static int ipoe_create_interface(struct ipoe_session *ses)
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_ifindex = ses->ifindex;
-	if (ioctl(sock_fd, SIOCGIFNAME, &ifr, sizeof(ifr))) {
+	if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr))) {
 		log_ppp_error("ipoe: failed to get interface name\n");
 		ses->ifindex = -1;
 		ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
@@ -907,7 +907,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 		if (ses->ses.ipv4 && !ses->ses.ipv4->addr)
 			ses->ses.ipv4->addr = ses->siaddr;
 
-		dhcpv4_send_reply(DHCPOFFER, ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
+		dhcpv4_send_reply(DHCPOFFER, ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
 				  ses->lease_time, ses->renew_time, ses->rebind_time, ses->dhcpv4_relay_reply);
 
 		dhcpv4_packet_free(ses->dhcpv4_request);
@@ -1044,12 +1044,23 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	if (ses->l4_redirect)
 		ipoe_change_l4_redirect(ses, 0);
 
+	if (ses->ses.net != def_net && !serv->opt_shared && serv->dhcpv4 && !ses->dhcpv4) {
+		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
+		if (ses->dhcpv4) {
+			ses->dhcpv4->recv = ipoe_ses_recv_dhcpv4;
+			dhcpv4_free(serv->dhcpv4);
+			serv->dhcpv4 = NULL;
+			serv->need_close = 1;
+			ipoe_serv_release(serv);
+		}
+	}
+
 	if (ses->dhcpv4_request) {
 		if (ses->ses.state == AP_STATE_ACTIVE)
 			dhcpv4_send_reply(DHCPACK, ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
 					  ses->lease_time, ses->renew_time, ses->rebind_time, ses->dhcpv4_relay_reply);
 		else
-			dhcpv4_send_nak(ses->serv->dhcpv4, ses->dhcpv4_request, SESSION_TERMINATED);
+			dhcpv4_send_nak(ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, SESSION_TERMINATED);
 
 		dhcpv4_packet_free(ses->dhcpv4_request);
 		ses->dhcpv4_request = NULL;
@@ -1141,7 +1152,7 @@ static void ipoe_session_started(struct ap_session *s)
 		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
 		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
 
-	if (ses->ses.net == def_net && ses->ifindex != -1 && ses->xid) {
+	if (ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
 		if (!ses->dhcpv4) {
 			//terminate
@@ -1213,10 +1224,10 @@ static void ipoe_session_finished(struct ap_session *s)
 		}
 		if (uc_size < conf_unit_cache) {
 			strcpy(ifr.ifr_name, s->ifname);
-			ioctl(sock_fd, SIOCGIFFLAGS, &ifr);
+			net->sock_ioctl(SIOCGIFFLAGS, &ifr);
 			if (ifr.ifr_flags & IFF_UP) {
 				ifr.ifr_flags &= ~IFF_UP;
-				ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+				net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 			}
 
 			ipaddr_del_peer(s->ifindex, ses->router, ses->yiaddr);
@@ -1258,19 +1269,19 @@ static void ipoe_session_finished(struct ap_session *s)
 
 		strcpy(ifr.ifr_name, s->ifname);
 
-		ioctl(sock_fd, SIOCGIFFLAGS, &ifr);
+		net->sock_ioctl(SIOCGIFFLAGS, &ifr);
 		flags = ifr.ifr_flags;
 		if (flags & IFF_UP) {
 			ifr.ifr_flags &= ~IFF_UP;
-			ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+			net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 		}
 
 		strcpy(ifr.ifr_newname, ses->serv->ifname);
-		ioctl(sock_fd, SIOCSIFNAME, &ifr);
+		net->sock_ioctl(SIOCSIFNAME, &ifr);
 
 		strcpy(ifr.ifr_name, ses->serv->ifname);
 		ifr.ifr_flags = flags | IFF_UP;
-		ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+		net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 	}
 
 	pthread_mutex_lock(&ses->serv->lock);
@@ -1301,7 +1312,7 @@ static void ipoe_session_terminated_pkt(struct dhcpv4_packet *pack)
 		dhcpv4_print_packet(pack, 0, log_ppp_info2);
 	}
 
-	dhcpv4_send_nak(ses->serv->dhcpv4, pack, SESSION_TERMINATED);
+	dhcpv4_send_nak(ses->dhcpv4 ?: ses->serv->dhcpv4, pack, SESSION_TERMINATED);
 
 	dhcpv4_packet_free(pack);
 
@@ -1570,7 +1581,7 @@ static void ipoe_ses_recv_dhcpv4_request(struct dhcpv4_packet *pack)
 		(pack->hdr->ciaddr && (pack->hdr->ciaddr != ses->yiaddr))) {
 
 		if (pack->server_id == ses->siaddr)
-			dhcpv4_send_nak(ses->serv->dhcpv4, pack, "Wrong session");
+			dhcpv4_send_nak(ses->dhcpv4 ?: ses->serv->dhcpv4, pack, "Wrong session");
 
 		ap_session_terminate(&ses->ses, TERM_USER_REQUEST, 1);
 
@@ -2789,7 +2800,7 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_ifindex = ifindex;
-	if (ioctl(sock_fd, SIOCGIFNAME, &ifr, sizeof(ifr))) {
+	if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr))) {
 		log_error("ipoe: vlan-mon: failed to get interface name, ifindex=%i\n", ifindex);
 		return;
 	}
@@ -2826,24 +2837,24 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 		log_info2("ipoe: create vlan %s parent %s\n", ifname, ifr.ifr_name);
 
 		ifr.ifr_ifindex = vlan_ifindex;
-		if (ioctl(sock_fd, SIOCGIFNAME, &ifr, sizeof(ifr))) {
+		if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr))) {
 			log_error("ipoe: vlan-mon: failed to get interface name, ifindex=%i\n", ifindex);
 			return;
 		}
 
-		if (ioctl(sock_fd, SIOCGIFFLAGS, &ifr, sizeof(ifr)))
+		if (net->sock_ioctl(SIOCGIFFLAGS, &ifr, sizeof(ifr)))
 			return;
 
 		if (ifr.ifr_flags & IFF_UP) {
 			ifr.ifr_flags &= ~IFF_UP;
 
-			if (ioctl(sock_fd, SIOCSIFFLAGS, &ifr, sizeof(ifr)))
+			if (net->sock_ioctl(SIOCSIFFLAGS, &ifr, sizeof(ifr)))
 				return;
 		}
 
 		if (strcmp(ifr.ifr_name, ifname)) {
 			strcpy(ifr.ifr_newname, ifname);
-			if (ioctl(sock_fd, SIOCSIFNAME, &ifr, sizeof(ifr))) {
+			if (net->sock_ioctl(SIOCSIFNAME, &ifr, sizeof(ifr))) {
 				log_error("ipoe: vlan-mon: failed to rename interface %s to %s\n", ifr.ifr_name, ifr.ifr_newname);
 				return;
 			}
@@ -2859,7 +2870,7 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 	len = strlen(ifname);
 	memcpy(ifr.ifr_name, ifname, len + 1);
 
-	if (ioctl(sock_fd, SIOCGIFINDEX, &ifr, sizeof(ifr))) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr, sizeof(ifr))) {
 		log_error("ipoe: vlan-mon: %s: failed to get interface index\n", ifr.ifr_name);
 		return;
 	}
@@ -2924,10 +2935,10 @@ static void ipoe_ipv6_enable(struct ipoe_serv *serv)
 	ifr.ifr_hwaddr.sa_data[0] = 0x33;
 	ifr.ifr_hwaddr.sa_data[1] = 0x33;
 	*(uint32_t *)(ifr.ifr_hwaddr.sa_data + 2) = htonl(0x02);
-	ioctl(sock_fd, SIOCADDMULTI, &ifr);
+	net->sock_ioctl(SIOCADDMULTI, &ifr);
 
 	*(uint32_t *)(ifr.ifr_hwaddr.sa_data + 2) = htonl(0x010002);
-	ioctl(sock_fd, SIOCADDMULTI, &ifr);
+	net->sock_ioctl(SIOCADDMULTI, &ifr);
 }
 
 static void ipoe_ipv6_disable(struct ipoe_serv *serv)
@@ -2940,10 +2951,10 @@ static void ipoe_ipv6_disable(struct ipoe_serv *serv)
 	ifr.ifr_hwaddr.sa_data[0] = 0x33;
 	ifr.ifr_hwaddr.sa_data[1] = 0x33;
 	*(uint32_t *)(ifr.ifr_hwaddr.sa_data + 2) = htonl(0x02);
-	ioctl(sock_fd, SIOCDELMULTI, &ifr);
+	net->sock_ioctl(SIOCDELMULTI, &ifr);
 
 	*(uint32_t *)(ifr.ifr_hwaddr.sa_data + 2) = htonl(0x010002);
-	ioctl(sock_fd, SIOCDELMULTI, &ifr);
+	net->sock_ioctl(SIOCDELMULTI, &ifr);
 }
 
 
@@ -3183,32 +3194,32 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	memset(&ifr, 0, sizeof(ifr));
 	strcpy(ifr.ifr_name, ifname);
 
-	if (ioctl(sock_fd, SIOCGIFHWADDR, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr)) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFHWADDR): %s\n", ifname, strerror(errno));
 		return;
 	}
 
 	memcpy(hwaddr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
-	ioctl(sock_fd, SIOCGIFFLAGS, &ifr);
+	net->sock_ioctl(SIOCGIFFLAGS, &ifr);
 
 	if ((ifr.ifr_flags & IFF_UP) && opt_shared == 0 && opt_ifcfg) {
 		int flags = ifr.ifr_flags;
 
 		ifr.ifr_flags &= ~IFF_UP;
-		ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+		net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 
 		flags = ifr.ifr_flags;
 
 		((struct sockaddr_in *)&ifr.ifr_addr)->sin_family = AF_INET;
 		((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr = 0;
-		ioctl(sock_fd, SIOCSIFADDR, &ifr, sizeof(ifr));
+		net->sock_ioctl(SIOCSIFADDR, &ifr, sizeof(ifr));
 
 		ifr.ifr_flags = flags;
 	}
 
 	ifr.ifr_flags |= IFF_UP;
-	ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+	net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 
 	serv = _malloc(sizeof(*serv));
 	memset(serv, 0, sizeof(*serv));
@@ -3315,7 +3326,7 @@ static void load_interface(const char *opt)
 		}
 	}
 
-	if (ioctl(sock_fd, SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFINDEX): %s\n", ifr.ifr_name, strerror(errno));
 		return;
 	}
@@ -3602,19 +3613,19 @@ static void add_vlan_mon(const char *opt, long *mask)
 	memcpy(ifr.ifr_name, opt, ptr - opt);
 	ifr.ifr_name[ptr - opt] = 0;
 
-	if (ioctl(sock_fd, SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFINDEX): %s\n", ifr.ifr_name, strerror(errno));
 		return;
 	}
 
 	ifindex = ifr.ifr_ifindex;
 
-	ioctl(sock_fd, SIOCGIFFLAGS, &ifr);
+	net->sock_ioctl(SIOCGIFFLAGS, &ifr);
 
 	if (!(ifr.ifr_flags & IFF_UP)) {
 		ifr.ifr_flags |= IFF_UP;
 
-		ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+		net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 	}
 
 	memcpy(mask1, mask, sizeof(mask1));
@@ -3647,7 +3658,7 @@ static int __load_vlan_mon_re(int index, int flags, const char *name, int iflink
 		strcpy(ifr.ifr_name, name);
 		ifr.ifr_flags = flags | IFF_UP;
 
-		ioctl(sock_fd, SIOCSIFFLAGS, &ifr);
+		net->sock_ioctl(SIOCSIFFLAGS, &ifr);
 	}
 
 	memcpy(mask1, arg->arg1, sizeof(mask1));
