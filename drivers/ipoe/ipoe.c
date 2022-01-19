@@ -701,33 +701,23 @@ static struct net_device *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr)
 	return out;
 }
 
-static struct ipoe_session *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_addr *addr, struct net_device **dev)
+static struct net_device *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_addr *addr)
 {
+	struct net_device *out = NULL;
 	struct net *net = pick_net(skb);
 	struct dst_entry *dst;
-	struct flowi6 fl6;
-	struct ipoe_session *ses;
 
-	memset(&fl6, 0, sizeof(fl6));
-	fl6.daddr = *addr;
+	struct flowi6 fl6 = {
+		.daddr = *addr,
+	};
 
 	dst = ip6_route_output(net, NULL, &fl6);
 
-	if (!dst)
-		return NULL;
-
-	*dev = dst->dev;
-
-	if (dst->error || dst->dev->netdev_ops != &ipoe_netdev_ops) {
-		dst_release(dst);
-		return NULL;
-	}
-	ses = netdev_priv(*dev);
-	atomic_inc(&ses->refs);
+	if (dst && !dst->error && dst->dev->netdev_ops == &ipoe_netdev_ops)
+		out = dst->dev;
 
 	dst_release(dst);
-
-	return ses;
+	return out;
 }
 
 static bool is_unnumbered(struct net_device *dev, __be32 addr)
@@ -812,22 +802,21 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 
 		ip6h = ipv6_hdr(skb);
 
-		if (ip6h->saddr.s6_addr16[0] == htons(0xfe80)) {
-			ses = ipoe_lookup_hwaddr(eth->h_source, NULL, 0);
-			if (!ses)
+		ses = ipoe_lookup_hwaddr(eth->h_source, dev, 0);
+		if (!ses) {
+			if (ip6h->saddr.s6_addr16[0] == htons(0xfe80))
 				return RX_HANDLER_PASS;
-		} else {
-			ses = ipoe_lookup_rt6(skb, &ip6h->saddr, &out);
-			if (!ses) {
-				if (i->mode == 0)
-					return RX_HANDLER_PASS;
 
-				if (out == dev && i->mode == 2)
-					return RX_HANDLER_PASS;
+			if (i->mode == 0)
+				return RX_HANDLER_PASS;
 
-				kfree_skb(skb);
-				return RX_HANDLER_CONSUMED;
-			}
+			out = ipoe_lookup_rt6(skb, &ip6h->saddr);
+
+			if (out == dev && i->mode == 2)
+				return RX_HANDLER_PASS;
+
+			kfree_skb(skb);
+			return RX_HANDLER_CONSUMED;
 		}
 	} else
 		return RX_HANDLER_PASS;
