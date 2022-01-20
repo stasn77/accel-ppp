@@ -691,6 +691,7 @@ static struct net_device *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr)
 		.daddr = addr,
 		.flowi4_tos = RT_TOS(0),
 		.flowi4_scope = RT_SCOPE_UNIVERSE,
+		.flowi4_oif = (netif_is_l3_slave(skb->dev) ? skb->dev->ifindex : 0),
 	};
 	struct rtable *rt = ip_route_output_key_hash(net, &fl4, NULL);
 
@@ -709,6 +710,7 @@ static struct net_device *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_
 
 	struct flowi6 fl6 = {
 		.daddr = *addr,
+		.flowi6_oif = (netif_is_l3_slave(skb->dev) ? skb->dev->ifindex : 0),
 	};
 
 	dst = ip6_route_output(net, NULL, &fl6);
