@@ -64,9 +64,9 @@ struct ipoe_stats {
 	u64 packets;
 	u64 bytes;
 };
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 struct ida ses_ida;
-
+#endif
 struct ipoe_session {
 	struct hlist_node entry; //ipoe_list
 	struct list_head entry2; //ipoe_list2
@@ -80,8 +80,9 @@ struct ipoe_session {
 
 	struct net_device *dev;
 	struct net_device *link_dev;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	int ida;
+#endif
 	atomic_t refs;
 
 	struct ipoe_stats __percpu *rx_stats;
@@ -977,12 +978,16 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	struct ipoe_session *ses;
 	struct net_device *dev;
 	char name[IFNAMSIZ];
-	int ida, r = -EINVAL;
-
+	int r = -EINVAL;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	int ida;
 	ida = ida_alloc(&ses_ida, GFP_ATOMIC);
 	if (ida < 0)
 		goto failed;
 	sprintf(name, "ipoe%d", ida);
+#else
+	sprintf(name, "ipoe%%d");
+#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
 	dev = alloc_netdev(sizeof(*ses), name, NET_NAME_ENUM, ipoe_netdev_setup);
@@ -1005,7 +1010,9 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	ses = netdev_priv(dev);
 	memset(ses, 0, sizeof(*ses));
 	atomic_set(&ses->refs, 0);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ses->ida = ida;
+#endif
 	ses->dev = dev;
 	ses->addr = addr;
 	ses->peer_addr = peer_addr;
@@ -1055,7 +1062,9 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	return r;
 
 failed_free:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ida_free(&ses_ida, ida);
+#endif
 	free_netdev(dev);
 failed:
 	if (link_dev)
@@ -1222,9 +1231,9 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 
 	if (ses->link_dev)
 		dev_put(ses->link_dev);
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ida_free(&ses_ida, ses->ida);
-
+#endif
 	unregister_netdev(ses->dev);
 
 	ret = 0;
@@ -1838,9 +1847,9 @@ static void __exit ipoe_fini(void)
 	}
 
 	clean_excl_list();
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ida_destroy(&ses_ida);
-
+#endif
 	synchronize_rcu();
 }
 
