@@ -728,7 +728,7 @@ static int __init vlan_mon_init(void)
 	int i;
 #endif
 
-	printk("vlan-mon driver v1.11\n");
+	printk("vlan-mon driver v1.12.9999\n");
 
 	INIT_WORK(&vlan_notify_work, vlan_do_notify);
 
