@@ -619,7 +619,8 @@ int __export iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw
 	req.n.nlmsg_type = RTM_NEWROUTE;
 	req.i.rtm_family = AF_INET;
 #ifdef HAVE_VRF
-	req.i.rtm_table = tableid;
+	req.i.rtm_table = tableid < 256 ? tableid : RT_TABLE_COMPAT;
+	addattr32(&req.n, sizeof(req), RTA_TABLE, tableid);
 #else
 	req.i.rtm_table = RT_TABLE_MAIN;
 #endif

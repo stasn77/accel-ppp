@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include "iputils.h"
+#include "utils.h"
 
 #include "crypto.h"
 
@@ -147,18 +149,43 @@ static void disconnect_request(struct radius_pd_t *rpd)
 #ifdef HAVE_VRF
 int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name)
 {
+	struct framed_route *fr;
+
 	if (*vrf_name == '0') {
 		// Delete interface from VRF
 		if (!ap_session_vrf(rpd->ses, NULL, 0))
-			return 1;
-	}
-	else {
+			goto out;
+	} else {
 		// Add interface to VRF
-		if(!ap_session_vrf(rpd->ses, vrf_name, -1))
-			return 1;
+		if(!ap_session_vrf(rpd->ses, vrf_name, -1)) {
+			int len = strlen(vrf_name);
+			if (rpd->ses->vrf_name)
+				_free(rpd->ses->vrf_name);
+			rpd->ses->vrf_name = _malloc(len + 1);
+			memcpy(rpd->ses->vrf_name, vrf_name, len);
+			rpd->ses->vrf_name[len] = 0;
+			goto out;
+		}
 	}
 
 	return 0;
+out:
+	for (fr = rpd->fr; fr; fr = fr->next) {
+		char *vrf_name = NULL;
+		uint32_t table_id;
+		int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
+		if (vrf_ifindex)
+			iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
+		else
+			table_id = RT_TABLE_MAIN;
+		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, table_id)) {
+			char dst[17], gw[17];
+			u_inet_ntoa(fr->dst, dst);
+			u_inet_ntoa(fr->gw, gw);
+			log_ppp_warn("radius: failed to add route %s/%i %s %u\n", dst, fr->mask, gw, fr->prio);
+		}
+	}
+	return 1;
 }
 #endif
 

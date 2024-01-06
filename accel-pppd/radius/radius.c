@@ -651,9 +651,18 @@ static void ses_started(struct ap_session *ses)
 	}
 
 	for (fr = rpd->fr; fr; fr = fr->next) {
+#ifdef HAVE_VRF
+		char *vrf_name = NULL;
+		uint32_t table_id;
+		int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
+		if (vrf_ifindex)
+			iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
+		else
+			table_id = RT_TABLE_MAIN;
+#endif /* HAVE_VRF */
 		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio
 #ifdef HAVE_VRF
-				, RT_TABLE_MAIN
+				, table_id
 #endif /* HAVE_VRF */
 				)) {
 			char dst[17], gw[17];
@@ -698,12 +707,22 @@ static void ses_finishing(struct ap_session *ses)
 	}
 
 	for (fr = rpd->fr; fr; fr = fr->next) {
-		if (fr->gw)
+		if (fr->gw) {
+#ifdef HAVE_VRF
+			char *vrf_name = NULL;
+			uint32_t table_id;
+			int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
+			if (vrf_ifindex)
+				iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
+			else
+				table_id = RT_TABLE_MAIN;
+#endif /* HAVE_VRF */
 			iproute_del(0, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio
 #ifdef HAVE_VRF
-					, RT_TABLE_MAIN
+					, table_id
 #endif /* HAVE_VRF */
 					);
+		}
 	}
 
 	if (rpd->acct_started || rpd->acct_req)
