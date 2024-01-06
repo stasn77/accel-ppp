@@ -786,8 +786,13 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 			ses = ipoe_lookup(saddr, dev);
 
 		if (!ses) {
-			if (i->mode == 0)
-				return RX_HANDLER_PASS;
+			if (i->mode == 0) {
+				ses = ipoe_lookup_hwaddr(eth->h_source, dev, 0);
+				if (ses)
+					goto found;
+				else
+					return RX_HANDLER_PASS;
+			}
 
 			out = ipoe_lookup_rt4(skb, saddr);
 
@@ -835,7 +840,7 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 	} else
 		return RX_HANDLER_PASS;
 
-
+found:
 	stats = &ses->dev->stats;
 
 	if (ses->gw)
