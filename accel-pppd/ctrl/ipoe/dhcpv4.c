@@ -945,7 +945,12 @@ void dhcpv4_send_notify(struct dhcpv4_serv *serv, struct dhcpv4_packet *req, uns
 	dhcpv4_packet_free(pack);
 }
 
-struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, struct triton_context_t *ctx, triton_event_func recv)
+struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, struct triton_context_t *ctx, triton_event_func recv
+#ifdef HAVE_VRF
+		, const char *vrfname)
+#else
+		)
+#endif
 {
 	char str[17], *ptr;
 	struct dhcpv4_relay *r;
