@@ -3319,14 +3319,14 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		addr.sin_addr.s_addr = relay_addr;
 		addr.sin_port = htons(DHCP_SERV_PORT);
 
-		sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		sock = net->socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-		if (connect(sock, &addr, sizeof(addr))) {
+		if (net->connect(sock, (struct sockaddr *)&addr, sizeof(addr))) {
 			log_error("dhcpv4: relay: %s: connect: %s\n", opt_relay, strerror(errno));
 			goto out_err;
 		}
 
-		getsockname(sock, &addr, &len);
+		net->getsockname(sock, (struct sockaddr *)&addr, (socklen_t *)&len);
 		opt_giaddr = addr.sin_addr.s_addr;
 
 		close(sock);

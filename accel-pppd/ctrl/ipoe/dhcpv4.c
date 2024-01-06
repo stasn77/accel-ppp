@@ -993,21 +993,21 @@ struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, st
 	r->addr = addr;
 	r->giaddr = giaddr;
 
-	sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock = net->socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (!sock) {
 		log_error("socket: %s\n", strerror(errno));
 		goto out_err_unlock;
 	}
 
-	if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
 		log_error("dhcpv4: setsockopt(SO_REUSEADDR): %s\n", strerror(errno));
 
-	if (bind(sock, &laddr, sizeof(laddr))) {
+	if (net->bind(sock, (struct sockaddr *)&laddr, sizeof(laddr))) {
 		log_error("dhcpv4: relay: %s: bind: %s\n", _addr, strerror(errno));
 		goto out_err_unlock;
 	}
 
-	if (connect(sock, &raddr, sizeof(raddr))) {
+	if (net->connect(sock, (struct sockaddr *)&raddr, sizeof(raddr))) {
 		log_error("dhcpv4: relay: %s: connect: %s\n", _addr, strerror(errno));
 		goto out_err_unlock;
 	}

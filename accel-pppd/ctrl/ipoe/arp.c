@@ -321,7 +321,7 @@ static void init()
 		arp_tree[i].root = RB_ROOT;
 	}
 
-	sock = socket(PF_PACKET, SOCK_DGRAM, 0);
+	sock = net->socket(PF_PACKET, SOCK_DGRAM, 0);
 	if (sock < 0) {
 		log_error("arp: socket: %s\n", strerror(errno));
 		return;
@@ -331,9 +331,9 @@ static void init()
 	addr.sll_family = AF_PACKET;
 	addr.sll_protocol = htons(ETH_P_ARP);
 
-	setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f));
+	net->setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f));
 
-	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
 		log_error("arp: bind: %s\n", strerror(errno));
 		close(sock);
 		return;
