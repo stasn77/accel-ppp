@@ -1028,6 +1028,7 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 		if (serv->opt_mode == MODE_L3)
 			iproute_get(ses->yiaddr, &gw);
+		//	iproute_get(ses->giaddr, &gw);
 
 		//if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, gw ? 0 : ses->serv->ifindex, gw ? NULL : ses->hwaddr)) {
 		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {

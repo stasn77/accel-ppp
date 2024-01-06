@@ -780,6 +780,8 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 			if (is_unnumbered(dev, saddr))
 				return RX_HANDLER_PASS;
 			ses = ipoe_lookup_hwaddr(eth->h_source, dev, saddr);
+			if (!ses) // && i->mode == 0)
+				ses = ipoe_lookup(saddr, dev);
 		} else
 			ses = ipoe_lookup(saddr, dev);
 
