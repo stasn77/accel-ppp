@@ -999,8 +999,20 @@ struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, st
 		goto out_err_unlock;
 	}
 
+#ifdef HAVE_VRF
+#ifdef SO_BINDTODEVICE
+	if (strlen(vrfname) && net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, vrfname, strlen(vrfname) + 1) < 0)
+		log_error("dhcpv4: setsockopt(SO_BINDTODEVICE %s): %s\n", vrfname, strerror(errno));
+#endif /* SO_BINDTODEVICE */
+#endif /* HAVE_VRF */
 	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)) < 0)
 		log_error("dhcpv4: setsockopt(SO_REUSEADDR): %s\n", strerror(errno));
+
+#ifdef HAVE_VRF
+	/* allow multiple UDP sockets from the same port but from different VRFs */
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &f, sizeof(f)) < 0)
+		log_error("dhcpv4: setsockopt(SO_REUSEPORT): %s\n", strerror(errno));
+#endif /* HAVE_VRF */
 
 	if (net->bind(sock, (struct sockaddr *)&laddr, sizeof(laddr)) < 0) {
 		log_error("dhcpv4: relay: %s: bind: %s\n", _addr, strerror(errno));
