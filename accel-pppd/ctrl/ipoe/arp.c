@@ -333,7 +333,7 @@ static void init()
 
 	net->setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f));
 
-	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		log_error("arp: bind: %s\n", strerror(errno));
 		close(sock);
 		return;
