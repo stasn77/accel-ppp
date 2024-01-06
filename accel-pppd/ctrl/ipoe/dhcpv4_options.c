@@ -57,7 +57,7 @@ static struct known_option options[] = {
 	{  57,  2,   2,  2, "Max-Message-Size", print_uint },
 	{  58,  4,   4,  4, "T1", print_uint },
 	{  59,  4,   4,  4, "T2", print_uint },
-	{  60,  1, 255,  1, "Vendor-Class", print_hex },
+	{  60,  1, 255,  1, "Vendor-Class", print_str },
 	{  61,  2, 255,  1, "Client-ID", print_hex },
 	{  82,  3, 255,  1, "Relay-Agent", print_relay_agent },
 	{ 121,  5, 255,  1, "Classless-Route", print_classless_route },
@@ -265,14 +265,16 @@ static void print_classless_route(const struct dhcpv4_option *opt, int elem_size
 		for (i = 0; i < mask; i++)
 			mask1 |= (1 << (32 - i));
 		ip &= mask1;
-		if (mask <= 8)
-			ptr++;
-		else if (mask <= 16)
-			ptr += 2;
-		else if (mask <= 24)
-			ptr += 3;
-		else
-			ptr += 4;
+		if (mask) {
+			if (mask <= 8)
+				ptr++;
+			else if (mask <= 16)
+				ptr += 2;
+			else if (mask <= 24)
+				ptr += 3;
+			else
+				ptr += 4;
+		}
 		gw = ntohl(*(uint32_t *)ptr);
 		ptr += 4;
 
