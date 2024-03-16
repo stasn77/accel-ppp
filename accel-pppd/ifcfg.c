@@ -127,6 +127,7 @@ void __export ap_session_accounting_started(struct ap_session *ses)
 
 			if (ses->ipv6) {
 				net->enter_ns();
+				devconf(ses, "disable_ipv6", "0");
 				devconf(ses, "accept_ra", "0");
 				devconf(ses, "autoconf", "0");
 				devconf(ses, "forwarding", "1");
