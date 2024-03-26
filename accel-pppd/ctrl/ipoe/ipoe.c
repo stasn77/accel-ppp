@@ -54,6 +54,13 @@
 
 #define SESSION_TERMINATED "Session was terminated"
 
+/* Use strncpy with N-1 and ensure the string is terminated.  */
+#define STRNCPY_TERMINATED(DEST, SRC, N) \
+  do { \
+    strncpy (DEST, SRC, N - 1); \
+    DEST[N - 1] = '\0'; \
+  } while (false)
+
 struct iplink_arg {
 	pcre *re;
 	const char *opt;
@@ -3350,7 +3357,7 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
 		if (serv->vrf_ifindex) {
 			iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
-			strncpy(serv->vrf_name, vrf_name, IFNAMSIZ);
+			STRNCPY_TERMINATED(serv->vrf_name, vrf_name, IFNAMSIZ);
 		} else {
 			serv->table_id = RT_TABLE_MAIN;
 			serv->vrf_name[0] = '\0';
@@ -3509,7 +3516,7 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
 	if (serv->vrf_ifindex) {
 		iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
-		strncpy(serv->vrf_name, vrf_name, IFNAMSIZ);
+		STRNCPY_TERMINATED(serv->vrf_name, vrf_name, IFNAMSIZ);
 	} else {
 		serv->table_id = RT_TABLE_MAIN;
 		serv->vrf_name[0] = '\0';
