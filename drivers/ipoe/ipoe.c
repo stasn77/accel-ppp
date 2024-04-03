@@ -34,6 +34,7 @@
 #include <net/ip6_route.h>
 
 #include "ipoe.h"
+#include "version.h"
 
 #define IPOE_HASH_SHIFT 8
 #define IPOE_HASH_BITS (1<<IPOE_HASH_SHIFT)
@@ -1774,7 +1775,7 @@ static int __init ipoe_init(void)
 {
 	int err, i;
 
-	printk("IPoE session driver v1.11\n");
+	printk("IPoE session driver v%s\n", ACCEL_PPP_VERSION);
 
 	ida_init(&ses_ida);
 
