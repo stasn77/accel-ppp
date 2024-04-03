@@ -1781,7 +1781,7 @@ static int __init ipoe_init(void)
 {
 	int err, i;
 
-	printk("IPoE session driver v1.12.9999\n");
+	printk("IPoE session driver v1.11\n");
 
 	ida_init(&ses_ida);
 
