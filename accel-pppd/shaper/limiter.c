@@ -554,13 +554,19 @@ int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int 
 
 		if (conf_down_limiter == LIM_TBF)
 			r = install_tbf(rth, ses->ifindex, down_speed, down_burst);
-		else if (conf_down_limiter == LIM_CLSACT)
+		else if (conf_down_limiter == LIM_CLSACT) {
 			r = install_clsact(rth, ses->ifindex, down_speed, down_burst);
-		else {
+			if (r == 0 && conf_fwmark)
+				install_fwmark(rth, ses->ifindex, TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS));
+		} else {
 			r = install_htb(rth, ses->ifindex, down_speed, down_burst);
-			if (r == 0)
+			if (r == 0) {
 				r = install_leaf_qdisc(rth, ses->ifindex, 0x00010001, 0x00020000);
+				if (conf_fwmark)
+					install_fwmark(rth, ses->ifindex, 0x00010000);
+			}
 		}
+
 	}
 
 	if (up_speed) {
@@ -578,13 +584,6 @@ int install_limiter(struct ap_session *ses, int down_speed, int down_burst, int 
 			if (r == 0)
 				r = install_leaf_qdisc(rth, conf_ifb_ifindex, 0x00010000 + idx, idx << 16);
 		}
-	}
-
-	if (conf_fwmark) {
-		if (conf_down_limiter == LIM_CLSACT)
-			install_fwmark(rth, ses->ifindex, TC_H_MAKE(TC_H_CLSACT, TC_H_MIN_EGRESS));
-		else
-			install_fwmark(rth, ses->ifindex, 0x00010000);
 	}
 
 	net->rtnl_put(rth);
