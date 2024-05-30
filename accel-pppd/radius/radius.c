@@ -906,7 +906,8 @@ struct radius_pd_t *rad_find_session_pack(struct rad_packet_t *pack)
 				port = attr->val.integer;
 				break;
 			case NAS_Port_Id:
-				port_id = attr->val.string;
+				if (!strstr(attr->val.string, "/"))
+					port_id = attr->val.string;
 				break;
 			case Framed_IP_Address:
 				if (attr->val.ipaddr != htonl(0xfffffffe))
