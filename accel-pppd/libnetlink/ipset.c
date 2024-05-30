@@ -21,6 +21,7 @@
 #include "triton.h"
 #include "log.h"
 
+#include "ap_net.h"
 #include "libnetlink.h"
 #include "ipset.h"
 
@@ -28,7 +29,7 @@
 
 static int __ipset_cmd(const char *name, in_addr_t addr, int cmd, int flags)
 {
-	struct rtnl_handle rth;
+	struct rtnl_handle *rth = net->rtnl_get();
 	struct req {
 		struct nlmsghdr n;
 		struct nfgenmsg nf;
@@ -37,7 +38,7 @@ static int __ipset_cmd(const char *name, in_addr_t addr, int cmd, int flags)
 	struct rtattr *tail1, *tail2;
 	uint8_t protocol = IPSET_PROTOCOL;
 
-	if (rtnl_open_byproto(&rth, 0, NETLINK_NETFILTER)) {
+	if (rtnl_open_byproto(rth, 0, NETLINK_NETFILTER)) {
 		log_error("ipset: cannot open rtnetlink\n");
 		return -1;
 	}
@@ -62,15 +63,15 @@ static int __ipset_cmd(const char *name, in_addr_t addr, int cmd, int flags)
 
 	addattr_nest_end(&req.n, tail1);
 
-	if (rtnl_talk(&rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
 		goto out_err;
 
-	rtnl_close(&rth);
+	rtnl_close(rth);
 
 	return 0;
 
 out_err:
-	rtnl_close(&rth);
+	rtnl_close(rth);
 
 	return -1;
 
@@ -88,7 +89,7 @@ int __export ipset_del(const char *name, in_addr_t addr)
 
 int __export ipset_flush(const char *name)
 {
-	struct rtnl_handle rth;
+	struct rtnl_handle *rth = net->rtnl_get();
 	struct req {
 		struct nlmsghdr n;
 		struct nfgenmsg nf;
@@ -96,7 +97,7 @@ int __export ipset_flush(const char *name)
 	} req;
 	uint8_t protocol = IPSET_PROTOCOL;
 
-	if (rtnl_open_byproto(&rth, 0, NETLINK_NETFILTER)) {
+	if (rtnl_open_byproto(rth, 0, NETLINK_NETFILTER)) {
 		log_error("ipset: cannot open rtnetlink\n");
 		return -1;
 	}
@@ -113,15 +114,15 @@ int __export ipset_flush(const char *name)
 	addattr_l(&req.n, 4096, IPSET_ATTR_PROTOCOL, &protocol, 1);
 	addattr_l(&req.n, 4096, IPSET_ATTR_SETNAME, name, strlen(name) + 1);
 
-	if (rtnl_talk(&rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
+	if (rtnl_talk(rth, &req.n, 0, 0, NULL, NULL, NULL, 0) < 0)
 		goto out_err;
 
-	rtnl_close(&rth);
+	rtnl_close(rth);
 
 	return 0;
 
 out_err:
-	rtnl_close(&rth);
+	rtnl_close(rth);
 
 	return -1;
 }
