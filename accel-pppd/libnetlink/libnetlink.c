@@ -23,6 +23,7 @@
 #include <time.h>
 #include <sys/uio.h>
 
+#include "ap_net.h"
 #include "libnetlink.h"
 #include "log.h"
 
@@ -47,7 +48,10 @@ int __export rtnl_open_byproto(struct rtnl_handle *rth, unsigned subscriptions,
 
 	memset(rth, 0, sizeof(*rth));
 
-	rth->fd = socket(AF_NETLINK, SOCK_RAW, protocol);
+	if (net && net != def_net)
+		rth->fd = net->socket(AF_NETLINK, SOCK_RAW, protocol);
+	else
+		rth->fd = socket(AF_NETLINK, SOCK_RAW, protocol);
 	if (rth->fd < 0) {
 		log_debug("libnetlink: ""Cannot open netlink socket: %s\n", strerror(errno));
 		return -1;
