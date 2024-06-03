@@ -231,11 +231,25 @@ void __export ap_session_ifdown(struct ap_session *ses)
 			net->sock6_ioctl(SIOCDIFADDR, &ifr6);
 		}
 
+#ifdef HAVE_VRF
+		char *vrf_name = NULL;
+		uint32_t table_id;
+		int vrf_ifindex = iplink_get_vrf_ifindex(ses->ifindex);
+		if (vrf_ifindex)
+			iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
+		else
+			table_id = RT_TABLE_MAIN;
+#endif /* HAVE_VRF */
+
 		list_for_each_entry(a, &ses->ipv6->addr_list, entry) {
 			if (!a->installed)
 				continue;
 			if (a->prefix_len > 64)
-				ip6route_del(ses->ifindex, &a->addr, a->prefix_len, NULL, 0, 0);
+				ip6route_del(ses->ifindex, &a->addr, a->prefix_len, NULL, 0, 0
+#ifdef HAVE_VRF
+					, table_id
+#endif /* HAVE_VRF */
+                                        );
 			else {
 				struct in6_addr addr;
 				memcpy(addr.s6_addr, &a->addr, 8);
