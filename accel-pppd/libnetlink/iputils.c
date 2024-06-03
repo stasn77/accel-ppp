@@ -463,6 +463,18 @@ out:
 
 	return r;
 }
+
+uint32_t __export iplink_get_table_id(int ifindex)
+{
+	char *vrf_name = NULL;
+	uint32_t table_id;
+	int vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
+	if (vrf_ifindex)
+		iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
+	else
+		table_id = RT_TABLE_MAIN;
+	return table_id;
+}
 #endif /* HAVE_VRF */
 
 int __export ipaddr_add(int ifindex, in_addr_t addr, int mask)

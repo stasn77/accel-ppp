@@ -637,16 +637,6 @@ static void ses_started(struct ap_session *ses)
 		triton_timer_add(ses->ctrl->ctx, &rpd->session_timeout, 0);
 	}
 
-#ifdef HAVE_VRF
-	char *vrf_name = NULL;
-	uint32_t table_id;
-	int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
-	if (vrf_ifindex)
-		iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
-	else
-		table_id = RT_TABLE_MAIN;
-#endif /* HAVE_VRF */
-
 	for (fr6 = rpd->fr6; fr6; fr6 = fr6->next) {
 		bool gw_spec = !IN6_IS_ADDR_UNSPECIFIED(&fr6->gw);
 		char nbuf[INET6_ADDRSTRLEN];
@@ -654,7 +644,7 @@ static void ses_started(struct ap_session *ses)
 
 		if (ip6route_add(gw_spec ? 0 : rpd->ses->ifindex, &fr6->prefix, fr6->plen, gw_spec ? &fr6->gw : NULL, 3, fr6->prio
 #ifdef HAVE_VRF
-				, table_id
+				, iplink_get_table_id(rpd->ses->ifindex)
 #endif /* HAVE_VRF */
 				)) {
 			log_ppp_warn("radius: failed to add route %s/%hhu %s %u\n",
@@ -666,7 +656,7 @@ static void ses_started(struct ap_session *ses)
 	for (fr = rpd->fr; fr; fr = fr->next) {
 		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio
 #ifdef HAVE_VRF
-				, table_id
+				, iplink_get_table_id(rpd->ses->ifindex)
 #endif /* HAVE_VRF */
 				)) {
 			char dst[17], gw[17];
@@ -700,16 +690,6 @@ static void ses_finishing(struct ap_session *ses)
 		rpd->auth_ctx = NULL;
 	}
 
-#ifdef HAVE_VRF
-	char *vrf_name = NULL;
-	uint32_t table_id;
-	int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
-	if (vrf_ifindex)
-		iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
-	else
-		table_id = RT_TABLE_MAIN;
-#endif /* HAVE_VRF */
-
 	for (fr6 = rpd->fr6; fr6; fr6 = fr6->next) {
 		/* Routes that have an unspecified gateway have been defined
 		 * using the session's virtual network interface. No need to
@@ -719,7 +699,7 @@ static void ses_finishing(struct ap_session *ses)
 		if (!IN6_IS_ADDR_UNSPECIFIED(&fr6->gw))
 			ip6route_del(0, &fr6->prefix, fr6->plen, &fr6->gw, 3, fr6->prio
 #ifdef HAVE_VRF
-					, table_id
+					, iplink_get_table_id(rpd->ses->ifindex)
 #endif /* HAVE_VRF */
 					);
 	}
@@ -728,7 +708,7 @@ static void ses_finishing(struct ap_session *ses)
 		if (fr->gw) {
 			iproute_del(0, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio
 #ifdef HAVE_VRF
-					, table_id
+					, iplink_get_table_id(rpd->ses->ifindex)
 #endif /* HAVE_VRF */
 					);
 		}

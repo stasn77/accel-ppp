@@ -19,6 +19,7 @@ int iplink_vlan_get_vid(int ifindex, int *iflink);
 #ifdef HAVE_VRF
 int iplink_get_vrf_ifindex(int ifindex);
 int iplink_get_vrf_info(int vrf_ifindex, char **vrf_name, uint32_t *table_id);
+uint32_t iplink_get_table_id(int ifindex);
 #endif /* HAVE_VRF */
 
 int ipaddr_add(int ifindex, in_addr_t addr, int mask);

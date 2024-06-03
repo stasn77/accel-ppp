@@ -170,19 +170,10 @@ static void ev_ses_finished(struct ap_session *ses)
 	if (ses->ipv6_dp) {
 		if (pd->dp_active) {
 			struct ipv6db_addr_t *p;
-#ifdef HAVE_VRF
-               char *vrf_name = NULL;
-               uint32_t table_id;
-               int vrf_ifindex = iplink_get_vrf_ifindex(ses->ifindex);
-               if (vrf_ifindex)
-                       iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
-               else
-                       table_id = RT_TABLE_MAIN;
-#endif /* HAVE_VRF */
 			list_for_each_entry(p, &ses->ipv6_dp->prefix_list, entry)
 				ip6route_del(0, &p->addr, p->prefix_len, NULL, 0, 0
 #ifdef HAVE_VRF
-                                        , table_id
+                                        , iplink_get_table_id(ses->ifindex)
 #endif /* HAVE_VRF */
                                         );
 		}
@@ -205,20 +196,10 @@ static void insert_dp_routes(struct ap_session *ses, struct dhcpv6_pd *pd, struc
 	if (!conf_route_via_gw || (addr && IN6_IS_ADDR_UNSPECIFIED(addr)))
 		addr = NULL;
 
-#ifdef HAVE_VRF
-               char *vrf_name = NULL;
-               uint32_t table_id;
-               int vrf_ifindex = iplink_get_vrf_ifindex(ses->ifindex);
-               if (vrf_ifindex)
-                       iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
-               else
-                       table_id = RT_TABLE_MAIN;
-#endif /* HAVE_VRF */
-
 	list_for_each_entry(p, &ses->ipv6_dp->prefix_list, entry) {
 		if (ip6route_add(ses->ifindex, &p->addr, p->prefix_len, addr, 0, 0
 #ifdef HAVE_VRF
-                                        , table_id
+                                        , iplink_get_table_id(ses->ifindex)
 #endif /* HAVE_VRF */
                                         )) {
 			err = errno;
