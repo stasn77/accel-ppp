@@ -127,7 +127,7 @@ void __export ap_session_accounting_started(struct ap_session *ses)
 
 			if (ses->ipv6) {
 				net->enter_ns();
-				if (ses->ctrl->ppp || (!ses->ctrl->ppp && ses->ipv6_dp))
+				if (ses->ctrl->ppp || ses->ipv6_dp)
 					devconf(ses, "disable_ipv6", "0");
 				devconf(ses, "accept_ra", "0");
 				devconf(ses, "autoconf", "0");
