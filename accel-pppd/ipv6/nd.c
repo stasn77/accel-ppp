@@ -200,6 +200,9 @@ static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *ds
 	} else
 		endptr = rdnss_addr;
 
+        if (dst_addr->sin6_scope_id != ses->ifindex)
+                dst_addr->sin6_scope_id = ses->ifindex;
+
 	net->sendto(h->hnd.fd, buf, endptr - buf, 0, (struct sockaddr *)dst_addr, sizeof(*dst_addr));
 
 	mempool_free(buf);

@@ -127,7 +127,8 @@ void __export ap_session_accounting_started(struct ap_session *ses)
 
 			if (ses->ipv6) {
 				net->enter_ns();
-				devconf(ses, "disable_ipv6", "0");
+				if (ses->ctrl->ppp || ses->ipv6_dp)
+					devconf(ses, "disable_ipv6", "0");
 				devconf(ses, "accept_ra", "0");
 				devconf(ses, "autoconf", "0");
 				devconf(ses, "forwarding", "1");
@@ -235,7 +236,11 @@ void __export ap_session_ifdown(struct ap_session *ses)
 			if (!a->installed)
 				continue;
 			if (a->prefix_len > 64)
-				ip6route_del(ses->ifindex, &a->addr, a->prefix_len, NULL, 0, 0);
+				ip6route_del(ses->ifindex, &a->addr, a->prefix_len, NULL, 0, 0
+#ifdef HAVE_VRF
+					, iplink_get_table_id(ses->ifindex)
+#endif /* HAVE_VRF */
+                                        );
 			else {
 				struct in6_addr addr;
 				memcpy(addr.s6_addr, &a->addr, 8);
