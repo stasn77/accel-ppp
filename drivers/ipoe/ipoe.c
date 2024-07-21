@@ -679,7 +679,7 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *
 	rcu_read_lock();
 
 	hlist_for_each_entry_rcu(ses, &ipoe_list3[idx], entry3) {
-		if (ether_addr_equal(ses->hwaddr, hwaddr) &&
+		if (ether_addr_equal_64bits(ses->hwaddr, hwaddr) &&
 		   (!dev || (ses->link_dev == dev)) &&
 		   (!addr || (ses->peer_addr == addr))) {
 			atomic_inc(&ses->refs);
@@ -846,7 +846,7 @@ found:
 
 	if (ses->gw)
 		ether_addr_copy(ses->hwaddr, eth->h_source);
-	else if (!ether_addr_equal(eth->h_source, ses->hwaddr))
+	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr))
 		goto drop;
 
 	if (skb->protocol == htons(ETH_P_IP) && ses->addr > 1 && check_nat_required(skb, ses->link_dev) && ipoe_do_nat(skb, ses->addr, 0))
@@ -1051,7 +1051,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 #else
 		ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
 #endif
-		ether_addr_copy(dev->broadcast, link_dev->broadcast);
+		memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
 	}
 
 	if (addr)
@@ -1319,7 +1319,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 #else
 			ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
 #endif
-			ether_addr_copy(dev->broadcast, link_dev->broadcast);
+			memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
 		}
 	}
 
