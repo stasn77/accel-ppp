@@ -9,7 +9,8 @@ def accel_pppd_config(veth_pair_netns):
     return (
         """
     [modules]
-    pppoe
+    connlimit
+    radius
     ipoe
     ippool
 
@@ -20,16 +21,23 @@ def accel_pppd_config(veth_pair_netns):
     [cli]
     tcp=127.0.0.1:2001
 
+    [core]
+    log-error=/dev/stderr
+
     [log]
     log-debug=/dev/stdout
+    log-file=/dev/stdout
+    log-emerg=/dev/stderr
     level=5
+
+    [radius]
 
     [ipoe]
     noauth=1
     shared=1
     gw-ip-address=192.0.2.1/24
-    interface="""
-        + veth_pair_netns["veth_a"]
+    interface=re:."""
+        + veth_pair_netns["veth_a"][1:]
     )
 
 
