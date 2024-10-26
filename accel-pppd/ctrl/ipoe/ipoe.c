@@ -2886,11 +2886,11 @@ static struct conf_option_t *ipoe_find_opt(const char *ifname)
 {
 	struct conf_sect_t *sect = conf_get_section("ipoe");
 	struct conf_option_t *opt;
-	const char *pcre_err;
+	int pcre_err;
 	struct ifreq ifr;
-	int pcre_offset;
+	PCRE2_SIZE pcre_offset;
 	const char *ptr;
-	pcre *re = NULL;
+	pcre2_code *re = NULL;
 	char *pattern;
 
 	list_for_each_entry(opt, &sect->items, entry) {
@@ -2906,23 +2906,25 @@ static struct conf_option_t *ipoe_find_opt(const char *ifname)
 			memcpy(pattern, opt->val + 3, ptr - (opt->val + 3));
 			pattern[ptr - (opt->val + 3)] = 0;
 
-			re = pcre_compile2(pattern, 0, NULL, &pcre_err, &pcre_offset, NULL);
+			re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED, 0, &pcre_err, &pcre_offset, NULL);
 
 			if (!re) {
-				log_error("ipoe: '%s': %s at %i\r\n", pattern, pcre_err, pcre_offset);
+				log_error("ipoe: '%s': %i at %lu\r\n", pattern, pcre_err, pcre_offset);
 				_free(pattern);
-				pcre_free(re);
+				pcre2_code_free(re);
 				continue;
 			}
 
 			_free(pattern);
 
-			if (pcre_exec(re, NULL, ifname, strlen(ifname), 0, 0, NULL, 0) < 0) {
-				pcre_free(re);
+			pcre2_match_data *match_data = pcre2_match_data_create(0, NULL);
+			if (pcre2_match(re, (PCRE2_SPTR)ifname, strlen(ifname), 0, 0, match_data, NULL) < 0) {
+				pcre2_match_data_free(match_data);
+				pcre2_code_free(re);
 				continue;
 			}
-
-			pcre_free(re);
+			pcre2_match_data_free(match_data);
+			pcre2_code_free(re);
 		} else {
 			if (ptr - opt->val >= sizeof(ifr.ifr_name))
 				continue;
