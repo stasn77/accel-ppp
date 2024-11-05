@@ -39,6 +39,7 @@
 #include "vlan_mon.h"
 
 #include "ipoe.h"
+#include "if_ipoe.h"
 
 #include "memdebug.h"
 
@@ -52,6 +53,13 @@
 #define LEASE_TIME 600
 
 #define SESSION_TERMINATED "Session was terminated"
+
+/* Use strncpy with N-1 and ensure the string is terminated.  */
+#define STRNCPY_TERMINATED(DEST, SRC, N) \
+  do { \
+    strncpy (DEST, SRC, N - 1); \
+    DEST[N - 1] = '\0'; \
+  } while (false)
 
 struct iplink_arg {
 	pcre2_code *re;
@@ -217,6 +225,7 @@ static void ipoe_ses_recv_dhcpv4(struct dhcpv4_serv *dhcpv4, struct dhcpv4_packe
 static void __ipoe_recv_dhcpv4(struct dhcpv4_serv *dhcpv4, struct dhcpv4_packet *pack, int force);
 static void ipoe_session_keepalive(struct dhcpv4_packet *pack);
 static void add_interface(const char *ifname, int ifindex, const char *opt, int parent_ifindex, int vid, int vlan_mon);
+static void del_interface(const char *ifname, struct ipoe_serv *serv);
 static int get_offer_delay();
 static void __ipoe_session_start(struct ipoe_session *ses);
 static int ipoe_rad_send_auth_request(struct rad_plugin_t *rad, struct rad_packet_t *pack);
@@ -226,6 +235,7 @@ static void ipoe_serv_timeout(struct triton_timer_t *t);
 static struct ipoe_session *ipoe_session_create_up(struct ipoe_serv *serv, struct ethhdr *eth, struct iphdr *iph, struct _arphdr *arph);
 static void __terminate(struct ap_session *ses);
 static void ipoe_ipv6_disable(struct ipoe_serv *serv);
+static struct conf_option_t *ipoe_find_opt(const char *name);
 
 static void ipoe_ctx_switch(struct triton_context_t *ctx, void *arg)
 {
@@ -416,7 +426,13 @@ static void ipoe_session_timeout(struct triton_timer_t *t)
 
 	triton_timer_del(t);
 
-	log_ppp_info2("ipoe: session timed out\n");
+	log_ppp_info2("ipoe: session timed out hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			ses->hwaddr[0],
+			ses->hwaddr[1],
+			ses->hwaddr[2],
+			ses->hwaddr[3],
+			ses->hwaddr[4],
+			ses->hwaddr[5]);
 
 	ap_session_terminate(&ses->ses, TERM_LOST_CARRIER, 1);
 }
@@ -427,7 +443,13 @@ static void ipoe_session_l4_redirect_timeout(struct triton_timer_t *t)
 
 	triton_timer_del(t);
 
-	log_ppp_info2("ipoe: session timed out\n");
+	log_ppp_info2("ipoe: session timed out hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			ses->hwaddr[0],
+			ses->hwaddr[1],
+			ses->hwaddr[2],
+			ses->hwaddr[3],
+			ses->hwaddr[4],
+			ses->hwaddr[5]);
 
 	ap_session_terminate(&ses->ses, TERM_NAS_REQUEST, 1);
 }
@@ -444,7 +466,13 @@ static void ipoe_relay_timeout(struct triton_timer_t *t)
 	if (++ses->relay_retransmit > conf_relay_retransmit) {
 		triton_timer_del(t);
 
-		log_ppp_info2("ipoe: relay timed out\n");
+		log_ppp_info2("ipoe: relay timed out hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+				ses->hwaddr[0],
+				ses->hwaddr[1],
+				ses->hwaddr[2],
+				ses->hwaddr[3],
+				ses->hwaddr[4],
+				ses->hwaddr[5]);
 
 		ap_session_terminate(&ses->ses, TERM_LOST_CARRIER, 1);
 	} else
@@ -659,10 +687,19 @@ static void auth_result(struct ipoe_session *ses, int r)
 	if (r == PWDB_DENIED) {
 		if (conf_l4_redirect_on_reject && ses->dhcpv4_request) {
 			ses->l4_redirect = 1;
-			if (conf_l4_redirect_pool) {
+			if (conf_l4_redirect_pool || ses->serv->opt_l4_redirect_ip_pool) {
 				if (ses->ses.ipv4_pool_name)
 					_free(ses->ses.ipv4_pool_name);
-				ses->ses.ipv4_pool_name = _strdup(conf_l4_redirect_pool);
+				if (ses->ses.ipv6_pool_name)
+					_free(ses->ses.ipv6_pool_name);
+				if (ses->ses.dpv6_pool_name)
+					_free(ses->ses.dpv6_pool_name);
+				if (ses->serv->opt_l4_redirect_ip_pool)
+					ses->ses.ipv4_pool_name = _strdup(ses->serv->opt_l4_redirect_ip_pool);
+				else
+					ses->ses.ipv4_pool_name = _strdup(conf_l4_redirect_pool);
+				ses->ses.ipv6_pool_name = NULL;
+				ses->ses.dpv6_pool_name = NULL;
 			}
 
 			ses->l4_redirect_timer.expire = ipoe_session_l4_redirect_timeout;
@@ -673,8 +710,7 @@ static void auth_result(struct ipoe_session *ses, int r)
 				ap_session_terminate(&ses->ses, TERM_NAS_REQUEST, 1);
 				return;
 			}
-			log_ppp_info1("%s: authentication failed\n", ses->ses.username);
-			log_ppp_info1("%s: start temporary session (l4-redirect)\n", ses->ses.username);
+			log_ppp_info1("%s: authentication failed - start temporary session (l4-redirect) with ipv4_pool_name %s\n", ses->ses.username, ses->ses.ipv4_pool_name);
 			goto cont;
 		}
 
@@ -761,8 +797,17 @@ static void ipoe_session_start(struct ipoe_session *ses)
 
 	ap_session_starting(&ses->ses);
 
-	if (ses->serv->opt_shared && ipoe_create_interface(ses))
+#ifdef HAVE_VRF
+	if (strlen(ses->serv->vrf_name)) {
+		ses->ses.vrf_name = _malloc(strlen(ses->serv->vrf_name) + 1);
+		strncpy(ses->ses.vrf_name, ses->serv->vrf_name, strlen(ses->serv->vrf_name) + 1);
+	}
+#endif /* HAVE_VRF */
+
+	if (ses->serv->opt_shared && ipoe_create_interface(ses)) {
+		_free(username);
 		return;
+	}
 
 	if (conf_noauth)
 		r = PWDB_SUCCESS;
@@ -783,7 +828,7 @@ static void ipoe_session_start(struct ipoe_session *ses)
 		} else
 			pass = username;
 
-		ses->username = username;
+		ses->username = _strdup(username);
 		r = pwdb_check(&ses->ses, (pwdb_callback)auth_result, ses, username, PPP_PAP, pass);
 
 		if (r == PWDB_WAIT)
@@ -801,6 +846,8 @@ static void ipoe_session_start(struct ipoe_session *ses)
 	}
 
 	auth_result(ses, r);
+
+	_free(username);
 }
 
 static void find_gw_addr(struct ipoe_session *ses)
@@ -1004,7 +1051,13 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	if (ses->terminating || ses->started)
 		return;
 
-	log_ppp_debug("ipoe: activate session\n");
+	log_ppp_debug("ipoe: activate session hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			ses->hwaddr[0],
+			ses->hwaddr[1],
+			ses->hwaddr[2],
+			ses->hwaddr[3],
+			ses->hwaddr[4],
+			ses->hwaddr[5]);
 
 	if (ses->ifindex != -1) {
 		addr = 0;
@@ -1028,6 +1081,7 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 		if (serv->opt_mode == MODE_L3)
 			iproute_get(ses->yiaddr, &gw);
+		//	iproute_get(ses->giaddr, &gw);
 
 		//if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, gw ? 0 : ses->serv->ifindex, gw ? NULL : ses->hwaddr)) {
 		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
@@ -1067,10 +1121,18 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
 		if (!serv->opt_ip_unnumbered)
-			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0);
+			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0
+#ifdef HAVE_VRF
+					, serv->table_id
+#endif
+					);
 		else
-			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
-	}
+			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0
+#ifdef HAVE_VRF
+					, serv->table_id
+#endif
+					);
+        }
 
 	if (ses->l4_redirect)
 		ipoe_change_l4_redirect(ses, 0);
@@ -1174,15 +1236,24 @@ static void ipoe_session_started(struct ap_session *s)
 {
 	struct ipoe_session *ses = container_of(s, typeof(*ses), ses);
 
-	log_ppp_info1("ipoe: session started\n");
+	log_ppp_info1("ipoe: session started hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			ses->hwaddr[0],
+			ses->hwaddr[1],
+			ses->hwaddr[2],
+			ses->hwaddr[3],
+			ses->hwaddr[4],
+			ses->hwaddr[5]);
 
 	if (ses->timer.tpd)
 		triton_timer_mod(&ses->timer, 0);
 
 	if (ses->ses.ipv4->peer_addr != ses->yiaddr)
 		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
-		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
-
+		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0
+#ifdef HAVE_VRF
+                            , ses->serv->table_id
+#endif
+                            );
 	if (ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
 		if (!ses->dhcpv4) {
@@ -1239,7 +1310,13 @@ static void ipoe_session_finished(struct ap_session *s)
 	struct unit_cache *uc;
 	struct ifreq ifr;
 
-	log_ppp_info1("ipoe: session finished\n");
+	log_ppp_info1("ipoe: session finished hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+			ses->hwaddr[0],
+			ses->hwaddr[1],
+			ses->hwaddr[2],
+			ses->hwaddr[3],
+			ses->hwaddr[4],
+			ses->hwaddr[5]);
 
 	if (ses->ifindex != -1) {
 		if (s->vrf_name)
@@ -1276,9 +1353,17 @@ static void ipoe_session_finished(struct ap_session *s)
 	} else if (ses->started) {
 		if (!serv->opt_ifcfg) {
 			if (!serv->opt_ip_unnumbered)
-				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0);
+				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0
+#ifdef HAVE_VRF
+						, serv->table_id
+#endif
+						);
 			else
-				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
+				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0
+#ifdef HAVE_VRF
+						, serv->table_id
+#endif
+						);
 		}
 	}
 
@@ -1290,6 +1375,9 @@ static void ipoe_session_finished(struct ap_session *s)
 
 	if (ses->dhcpv4)
 		dhcpv4_free(ses->dhcpv4);
+
+	if (ses->username)
+		_free(ses->username);
 
 	triton_event_fire(EV_CTRL_FINISHED, s);
 
@@ -1451,8 +1539,13 @@ static struct ipoe_session *ipoe_session_create_dhcpv4(struct ipoe_serv *serv, s
 	ses->ses.ctrl = &ses->ctrl;
 	ses->ses.chan_name = ses->ctrl.calling_station_id;
 
-	if (conf_ip_pool)
+	if (serv->opt_ip_pool) {
+		log_info2("Using server specific ip pool %s\n", serv->opt_ip_pool);
+		ses->ses.ipv4_pool_name = _strdup(serv->opt_ip_pool);
+	} else if (conf_ip_pool) {
+		log_info2("Using global ip pool %s\n", conf_ip_pool);
 		ses->ses.ipv4_pool_name = _strdup(conf_ip_pool);
+	}
 	if (conf_ipv6_pool)
 		ses->ses.ipv6_pool_name = _strdup(conf_ipv6_pool);
 	if (conf_dpv6_pool)
@@ -2023,6 +2116,7 @@ static void ipoe_ses_recv_dhcpv4_relay(struct dhcpv4_packet *pack)
 
 	if (!ses->dhcpv4_request) {
 		ses->dhcpv4_relay_reply = NULL;
+		dhcpv4_packet_free(pack);
 		return;
 	}
 
@@ -2835,7 +2929,7 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_ifindex = ifindex;
-	if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr))) {
+	if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr)) < 0) {
 		log_error("ipoe: vlan-mon: failed to get interface name, ifindex=%i\n", ifindex);
 		return;
 	}
@@ -2872,24 +2966,24 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 		log_info2("ipoe: create vlan %s parent %s\n", ifname, ifr.ifr_name);
 
 		ifr.ifr_ifindex = vlan_ifindex;
-		if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr))) {
+		if (net->sock_ioctl(SIOCGIFNAME, &ifr, sizeof(ifr)) < 0) {
 			log_error("ipoe: vlan-mon: failed to get interface name, ifindex=%i\n", ifindex);
 			return;
 		}
 
-		if (net->sock_ioctl(SIOCGIFFLAGS, &ifr, sizeof(ifr)))
+		if (net->sock_ioctl(SIOCGIFFLAGS, &ifr, sizeof(ifr)) < 0)
 			return;
 
 		if (ifr.ifr_flags & IFF_UP) {
 			ifr.ifr_flags &= ~IFF_UP;
 
-			if (net->sock_ioctl(SIOCSIFFLAGS, &ifr, sizeof(ifr)))
+			if (net->sock_ioctl(SIOCSIFFLAGS, &ifr, sizeof(ifr)) < 0)
 				return;
 		}
 
 		if (strcmp(ifr.ifr_name, ifname)) {
 			strcpy(ifr.ifr_newname, ifname);
-			if (net->sock_ioctl(SIOCSIFNAME, &ifr, sizeof(ifr))) {
+			if (net->sock_ioctl(SIOCSIFNAME, &ifr, sizeof(ifr)) < 0) {
 				log_error("ipoe: vlan-mon: failed to rename interface %s to %s\n", ifr.ifr_name, ifr.ifr_newname);
 				return;
 			}
@@ -2905,7 +2999,7 @@ void ipoe_vlan_mon_notify(int ifindex, int vid, int vlan_ifindex)
 	len = strlen(ifname);
 	memcpy(ifr.ifr_name, ifname, len + 1);
 
-	if (net->sock_ioctl(SIOCGIFINDEX, &ifr, sizeof(ifr))) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr, sizeof(ifr)) < 0) {
 		log_error("ipoe: vlan-mon: %s: failed to get interface index\n", ifr.ifr_name);
 		return;
 	}
@@ -3012,6 +3106,8 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	int opt_mtu = 0;
 	int opt_weight = -1;
 	int opt_ip_unnumbered = conf_ip_unnumbered;
+	char *opt_ip_pool = NULL;
+	char *opt_l4_redirect_ip_pool = NULL;
 #ifdef USE_LUA
 	char *opt_lua_username_func = NULL;
 #endif
@@ -3023,6 +3119,9 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	int opt_check_mac_change = conf_check_mac_change;
 	struct ifreq ifr;
 	uint8_t hwaddr[ETH_ALEN];
+#ifdef HAVE_VRF
+	char *vrf_name = NULL;
+#endif /* HAVE_VRF */
 
 	str0 = strchr(opt, ',');
 	if (str0) {
@@ -3088,6 +3187,10 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 				opt_weight = atoi(ptr1);
 			} else if (strcmp(str, "ip-unnumbered") == 0) {
 				opt_ip_unnumbered = atoi(ptr1);
+			} else if (strcmp(str, "ip-pool") == 0) {
+				opt_ip_pool = _strdup(ptr1);
+			} else if (strcmp(str, "l4-redirect-ip-pool") == 0) {
+				opt_l4_redirect_ip_pool = _strdup(ptr1);
 			} else if (strcmp(str, "username") == 0) {
 				if (strcmp(ptr1, "ifname") == 0)
 					opt_username = USERNAME_IFNAME;
@@ -3129,14 +3232,14 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		addr.sin_addr.s_addr = relay_addr;
 		addr.sin_port = htons(DHCP_SERV_PORT);
 
-		sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		sock = net->socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-		if (connect(sock, (struct sockaddr*)&addr, sizeof(addr))) {
+		if (net->connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 			log_error("dhcpv4: relay: %s: connect: %s\n", opt_relay, strerror(errno));
 			goto out_err;
 		}
 
-		getsockname(sock, (struct sockaddr*)&addr, &len);
+		net->getsockname(sock, (struct sockaddr *)&addr, (socklen_t *)&len);
 		opt_giaddr = addr.sin_addr.s_addr;
 
 		close(sock);
@@ -3149,7 +3252,16 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 
 		serv->active = 1;
 		serv->ifindex = ifindex;
-
+#ifdef HAVE_VRF
+		serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
+		if (serv->vrf_ifindex) {
+			iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
+			STRNCPY_TERMINATED(serv->vrf_name, vrf_name, IFNAMSIZ);
+		} else {
+			serv->table_id = RT_TABLE_MAIN;
+			serv->vrf_name[0] = '\0';
+		}
+#endif /* HAVE_VRF */
 		if ((opt_shared && !serv->opt_shared) || (!opt_shared && serv->opt_shared)) {
 			ipoe_drop_sessions(serv, NULL);
 			serv->opt_shared = opt_shared;
@@ -3171,7 +3283,12 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		}
 
 		if (!serv->dhcpv4_relay && serv->opt_dhcpv4 && opt_relay)
-			serv->dhcpv4_relay = dhcpv4_relay_create(opt_relay, opt_giaddr, &serv->ctx, (triton_event_func)ipoe_recv_dhcpv4_relay);
+			serv->dhcpv4_relay = dhcpv4_relay_create(opt_relay, opt_giaddr, &serv->ctx, (triton_event_func)ipoe_recv_dhcpv4_relay
+#ifdef HAVE_VRF
+					, serv->vrf_name);
+#else
+					);
+#endif
 
 		if (serv->arp && !opt_arp) {
 			arpd_stop(serv->arp);
@@ -3196,6 +3313,8 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		serv->opt_weight = opt_weight;
 		serv->opt_ip_unnumbered = opt_ip_unnumbered;
 		serv->opt_check_mac_change = opt_check_mac_change;
+		serv->opt_ip_pool = opt_ip_pool;
+		serv->opt_l4_redirect_ip_pool = opt_l4_redirect_ip_pool;
 #ifdef USE_LUA
 		if (serv->opt_lua_username_func && (!opt_lua_username_func || strcmp(serv->opt_lua_username_func, opt_lua_username_func))) {
 			_free(serv->opt_lua_username_func);
@@ -3235,7 +3354,7 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	memset(&ifr, 0, sizeof(ifr));
 	strcpy(ifr.ifr_name, ifname);
 
-	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr) < 0) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFHWADDR): %s\n", ifname, strerror(errno));
 		return;
 	}
@@ -3284,12 +3403,24 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	serv->opt_weight = opt_weight;
 	serv->opt_ip_unnumbered = opt_ip_unnumbered;
 	serv->opt_check_mac_change = opt_check_mac_change;
+	serv->opt_ip_pool = opt_ip_pool;
+	serv->opt_l4_redirect_ip_pool = opt_l4_redirect_ip_pool;
 #ifdef USE_LUA
 	serv->opt_lua_username_func = opt_lua_username_func;
 #endif
 	serv->parent_ifindex = parent_ifindex;
 	serv->parent_vid = parent_ifindex ? iplink_vlan_get_vid(parent_ifindex, NULL) : 0;
 	serv->vid = vid;
+#ifdef HAVE_VRF
+	serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
+	if (serv->vrf_ifindex) {
+		iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
+		STRNCPY_TERMINATED(serv->vrf_name, vrf_name, IFNAMSIZ);
+	} else {
+		serv->table_id = RT_TABLE_MAIN;
+		serv->vrf_name[0] = '\0';
+	}
+#endif /* HAVE_VRF */
 	serv->active = 1;
 	INIT_LIST_HEAD(&serv->sessions);
 	INIT_LIST_HEAD(&serv->disc_list);
@@ -3306,7 +3437,12 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			serv->dhcpv4->recv = ipoe_recv_dhcpv4;
 
 		if (opt_relay)
-			serv->dhcpv4_relay = dhcpv4_relay_create(opt_relay, opt_giaddr, &serv->ctx, (triton_event_func)ipoe_recv_dhcpv4_relay);
+			serv->dhcpv4_relay = dhcpv4_relay_create(opt_relay, opt_giaddr, &serv->ctx, (triton_event_func)ipoe_recv_dhcpv4_relay
+#ifdef HAVE_VRF
+					, serv->vrf_name);
+#else
+					);
+#endif
 	}
 
 	if (serv->opt_arp)
@@ -3368,7 +3504,7 @@ static void load_interface(const char *opt)
 		}
 	}
 
-	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr) < 0) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFINDEX): %s\n", ifr.ifr_name, strerror(errno));
 		return;
 	}
@@ -3663,7 +3799,7 @@ static void add_vlan_mon(const char *opt, long *mask)
 	memcpy(ifr.ifr_name, opt, ptr - opt);
 	ifr.ifr_name[ptr - opt] = 0;
 
-	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr) < 0) {
 		log_error("ipoe: '%s': ioctl(SIOCGIFINDEX): %s\n", ifr.ifr_name, strerror(errno));
 		return;
 	}

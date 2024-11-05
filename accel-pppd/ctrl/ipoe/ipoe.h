@@ -4,7 +4,9 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <linux/if.h>
+#include <stdbool.h>
 
+#include "config.h"
 #include "triton.h"
 #include "ap_session.h"
 #include "ipdb.h"
@@ -48,6 +50,11 @@ struct ipoe_serv {
 	struct triton_timer_t timer;
 	pthread_mutex_t lock;
 	int parent_ifindex;
+#ifdef HAVE_VRF
+	int vrf_ifindex;
+	char vrf_name[IFNAMSIZ];
+	uint32_t table_id;
+#endif /* HAVE_VRF */
 	int vid;
 	int parent_vid;
 	int opt_mode;
@@ -68,6 +75,8 @@ struct ipoe_serv {
 	unsigned int opt_nat:1;
 	unsigned int opt_ipv6:1;
 	unsigned int opt_ip_unnumbered:1;
+	char *opt_ip_pool;
+	char *opt_l4_redirect_ip_pool;
 	unsigned int need_close:1;
 	unsigned int active:1;
 	unsigned int vlan_mon:1;

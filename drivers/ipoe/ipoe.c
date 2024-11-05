@@ -679,7 +679,7 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *
 	rcu_read_lock();
 
 	hlist_for_each_entry_rcu(ses, &ipoe_list3[idx], entry3) {
-		if (ether_addr_equal(ses->hwaddr, hwaddr) &&
+		if (ether_addr_equal_64bits(ses->hwaddr, hwaddr) &&
 		   (!dev || (ses->link_dev == dev)) &&
 		   (!addr || (ses->peer_addr == addr))) {
 			atomic_inc(&ses->refs);
@@ -781,12 +781,19 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 			if (is_unnumbered(dev, saddr))
 				return RX_HANDLER_PASS;
 			ses = ipoe_lookup_hwaddr(eth->h_source, dev, saddr);
+			if (!ses) // && i->mode == 0)
+				ses = ipoe_lookup(saddr, dev);
 		} else
 			ses = ipoe_lookup(saddr, dev);
 
 		if (!ses) {
-			if (i->mode == 0)
-				return RX_HANDLER_PASS;
+			if (i->mode == 0) {
+				ses = ipoe_lookup_hwaddr(eth->h_source, dev, 0);
+				if (ses)
+					goto found;
+				else
+					return RX_HANDLER_PASS;
+			}
 
 			out = ipoe_lookup_rt4(skb, saddr);
 
@@ -834,12 +841,12 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 	} else
 		return RX_HANDLER_PASS;
 
-
+found:
 	stats = &ses->dev->stats;
 
 	if (ses->gw)
 		ether_addr_copy(ses->hwaddr, eth->h_source);
-	else if (!ether_addr_equal(eth->h_source, ses->hwaddr))
+	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr))
 		goto drop;
 
 	if (skb->protocol == htons(ETH_P_IP) && ses->addr > 1 && check_nat_required(skb, ses->link_dev) && ipoe_do_nat(skb, ses->addr, 0))

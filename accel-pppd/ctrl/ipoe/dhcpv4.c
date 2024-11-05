@@ -114,7 +114,7 @@ struct dhcpv4_serv *dhcpv4_create(struct triton_context_t *ctx, const char *ifna
 	memset(&ifr, 0, sizeof(ifr));
 
 	strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr) < 0) {
 		log_error("dhcpv4(%s): ioctl(SIOCGIFINDEX): %s\n", ifname, strerror(errno));
 		return NULL;
 	}
@@ -128,35 +128,35 @@ struct dhcpv4_serv *dhcpv4_create(struct triton_context_t *ctx, const char *ifna
 
 	sock = net->socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)) < 0)
 		log_error("setsockopt(SO_REUSEADDR): %s\n", strerror(errno));
 
-	if (net->setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f)) < 0) {
 		log_error("setsockopt(SO_BROADCAST): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (net->setsockopt(sock, SOL_SOCKET, SO_NO_CHECK, &f, sizeof(f))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_NO_CHECK, &f, sizeof(f)) < 0) {
 		log_error("setsockopt(SO_NO_CHECK): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (net->setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &f, sizeof(f))) {
+	if (net->setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &f, sizeof(f)) < 0) {
 		log_error("setsockopt(IP_PKTINFO): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		log_error("bind: %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)) < 0) {
 		log_error("setsockopt(SO_BINDTODEVICE): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr) < 0) {
 		log_error("dhcpv4(%s): ioctl(SIOCGIFHWADDR): %s\n", ifname, strerror(errno));
 		goto out_err;
 	}
@@ -945,7 +945,12 @@ void dhcpv4_send_notify(struct dhcpv4_serv *serv, struct dhcpv4_packet *req, uns
 	dhcpv4_packet_free(pack);
 }
 
-struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, struct triton_context_t *ctx, triton_event_func recv)
+struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, struct triton_context_t *ctx, triton_event_func recv
+#ifdef HAVE_VRF
+		, const char *vrfname)
+#else
+		)
+#endif
 {
 	char str[17], *ptr;
 	struct dhcpv4_relay *r;
@@ -988,21 +993,33 @@ struct dhcpv4_relay *dhcpv4_relay_create(const char *_addr, in_addr_t giaddr, st
 	r->addr = addr;
 	r->giaddr = giaddr;
 
-	sock = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock = net->socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (!sock) {
 		log_error("socket: %s\n", strerror(errno));
 		goto out_err_unlock;
 	}
 
-	if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
+#ifdef HAVE_VRF
+#ifdef SO_BINDTODEVICE
+	if (strlen(vrfname) && net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, vrfname, strlen(vrfname) + 1) < 0)
+		log_error("dhcpv4: setsockopt(SO_BINDTODEVICE %s): %s\n", vrfname, strerror(errno));
+#endif /* SO_BINDTODEVICE */
+#endif /* HAVE_VRF */
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)) < 0)
 		log_error("dhcpv4: setsockopt(SO_REUSEADDR): %s\n", strerror(errno));
 
-	if (bind(sock, (struct sockaddr*)&laddr, sizeof(laddr))) {
+#ifdef HAVE_VRF
+	/* allow multiple UDP sockets from the same port but from different VRFs */
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &f, sizeof(f)) < 0)
+		log_error("dhcpv4: setsockopt(SO_REUSEPORT): %s\n", strerror(errno));
+#endif /* HAVE_VRF */
+
+	if (net->bind(sock, (struct sockaddr *)&laddr, sizeof(laddr)) < 0) {
 		log_error("dhcpv4: relay: %s: bind: %s\n", _addr, strerror(errno));
 		goto out_err_unlock;
 	}
 
-	if (connect(sock, (struct sockaddr*)&raddr, sizeof(raddr))) {
+	if (net->connect(sock, (struct sockaddr *)&raddr, sizeof(raddr)) < 0) {
 		log_error("dhcpv4: relay: %s: connect: %s\n", _addr, strerror(errno));
 		goto out_err_unlock;
 	}

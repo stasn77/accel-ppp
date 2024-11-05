@@ -16,6 +16,7 @@ struct ap_net {
 	int (*socket)(int domain, int type, int proto);
 	int (*connect)(int sock, const struct sockaddr *, socklen_t len);
 	int (*bind)(int sock, const struct sockaddr *, socklen_t len);
+	int (*getsockname)(int sock, const struct sockaddr *, socklen_t *len);
 	int (*listen)(int sock, int backlog);
 	ssize_t (*read)(int sock, void *buf, size_t len);
 	ssize_t (*recvmsg)(int sock, struct msghdr *msg, int flags);

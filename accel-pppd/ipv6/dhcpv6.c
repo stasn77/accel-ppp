@@ -90,17 +90,26 @@ static void ev_ses_started(struct ap_session *ses)
 
 	net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f));
 
-	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ses->ifname, strlen(ses->ifname))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ses->ifname, strlen(ses->ifname)) < 0) {
 		log_ppp_error("dhcpv6: setsockopt(SO_BINDTODEVICE): %s\n", strerror(errno));
 		close(sock);
 		return;
 	}
 
+#ifdef HAVE_VRF
+	/* allow multiple UDP sockets from the same port but from different VRFs */
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &f, sizeof(f)) < 0)
+		log_error("dhcpv6: setsockopt(SO_REUSEPORT): %s\n", strerror(errno));
+#endif /* HAVE_VRF */
+
+	net->setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &f, sizeof(f));
+
 	memset(&addr, 0, sizeof(addr));
 	addr.sin6_family = AF_INET6;
 	addr.sin6_port = htons(DHCPV6_SERV_PORT);
+	addr.sin6_addr = in6addr_any;
 
-	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
+	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		log_ppp_error("dhcpv6: bind: %s\n", strerror(errno));
 		close(sock);
 		return;
@@ -111,7 +120,7 @@ static void ev_ses_started(struct ap_session *ses)
 	mreq.ipv6mr_multiaddr.s6_addr32[0] = htonl(0xff020000);
 	mreq.ipv6mr_multiaddr.s6_addr32[3] = htonl(0x010002);
 
-	if (net->setsockopt(sock, SOL_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq))) {
+	if (net->setsockopt(sock, SOL_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
 		log_ppp_error("dhcpv6: failed to join to All_DHCP_Relay_Agents_and_Servers\n");
 		close(sock);
 		return;
@@ -162,7 +171,11 @@ static void ev_ses_finished(struct ap_session *ses)
 		if (pd->dp_active) {
 			struct ipv6db_addr_t *p;
 			list_for_each_entry(p, &ses->ipv6_dp->prefix_list, entry)
-				ip6route_del(0, &p->addr, p->prefix_len, NULL, 0, 0);
+				ip6route_del(0, &p->addr, p->prefix_len, NULL, 0, 0
+#ifdef HAVE_VRF
+                                        , iplink_get_table_id(ses->ifindex)
+#endif /* HAVE_VRF */
+                                        );
 		}
 
 		ipdb_put_ipv6_prefix(ses, ses->ipv6_dp);
@@ -184,7 +197,11 @@ static void insert_dp_routes(struct ap_session *ses, struct dhcpv6_pd *pd, struc
 		addr = NULL;
 
 	list_for_each_entry(p, &ses->ipv6_dp->prefix_list, entry) {
-		if (ip6route_add(ses->ifindex, &p->addr, p->prefix_len, addr, 0, 0)) {
+		if (ip6route_add(ses->ifindex, &p->addr, p->prefix_len, addr, 0, 0
+#ifdef HAVE_VRF
+                                        , iplink_get_table_id(ses->ifindex)
+#endif /* HAVE_VRF */
+                                        )) {
 			err = errno;
 			inet_ntop(AF_INET6, &p->addr, str1, sizeof(str1));
 			if (addr)
@@ -450,6 +467,9 @@ static void dhcpv6_send_reply(struct dhcpv6_packet *req, struct dhcpv6_pd *pd, i
 		}
 	}
 
+	if (req->addr.sin6_scope_id != ses->ifindex)
+		req->addr.sin6_scope_id = ses->ifindex;
+
 	opt1 = dhcpv6_option_alloc(reply, D6_OPTION_PREFERENCE, 1);
 	*(uint8_t *)opt1->hdr->data = 255;
 
@@ -604,6 +624,9 @@ static void dhcpv6_send_reply2(struct dhcpv6_packet *req, struct dhcpv6_pd *pd, 
 		} else if (ntohs(opt->hdr->code) == D6_OPTION_ORO)
 			insert_oro(reply, opt);
 	}
+
+	if (req->addr.sin6_scope_id != ses->ifindex)
+		req->addr.sin6_scope_id = ses->ifindex;
 
 	opt1 = dhcpv6_option_alloc(reply, D6_OPTION_PREFERENCE, 1);
 	*(uint8_t *)opt1->hdr->data = 255;

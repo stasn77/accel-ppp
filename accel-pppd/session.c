@@ -76,6 +76,7 @@ void __export ap_session_init(struct ap_session *ses)
 	ses->ifindex = -1;
 	ses->unit_idx = -1;
 	ses->net = net;
+	ses->vrf_name = NULL;
 }
 
 void __export ap_session_set_ifindex(struct ap_session *ses)
@@ -319,7 +320,7 @@ void __export ap_session_terminate(struct ap_session *ses, int cause, int hard)
 	ses->terminating = 1;
 	ses->state = AP_STATE_FINISHING;
 
-	log_ppp_debug("terminate\n");
+	log_ppp_debug("terminate %s\n", ses->ctrl->calling_station_id ? : "");
 
 	if (ses->ctrl->terminate(ses, hard)) {
 		ap_session_ifdown(ses);
