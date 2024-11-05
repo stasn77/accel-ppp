@@ -151,6 +151,8 @@ int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name)
 {
 	struct framed_route *fr;
 
+	net = rpd->ses->net;
+
 	if (*vrf_name == '0') {
 		// Delete interface from VRF
 		if (!ap_session_vrf(rpd->ses, NULL, 0))

@@ -637,6 +637,8 @@ static void ses_started(struct ap_session *ses)
 		triton_timer_add(ses->ctrl->ctx, &rpd->session_timeout, 0);
 	}
 
+	net = rpd->ses->net;
+
 	for (fr6 = rpd->fr6; fr6; fr6 = fr6->next) {
 		bool gw_spec = !IN6_IS_ADDR_UNSPECIFIED(&fr6->gw);
 		char nbuf[INET6_ADDRSTRLEN];
@@ -689,6 +691,8 @@ static void ses_finishing(struct ap_session *ses)
 		mempool_free(rpd->auth_ctx);
 		rpd->auth_ctx = NULL;
 	}
+
+	net = rpd->ses->net;
 
 	for (fr6 = rpd->fr6; fr6; fr6 = fr6->next) {
 		/* Routes that have an unspecified gateway have been defined
