@@ -51,22 +51,8 @@ static mempool_t opt_pool;
 static LIST_HEAD(relay_list);
 static pthread_mutex_t relay_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int raw_sock = -1;
-
 static int dhcpv4_read(struct triton_md_handler_t *h);
 int dhcpv4_packet_add_opt(struct dhcpv4_packet *pack, int type, const void *data, int len);
-
-static void open_raw_sock(void)
-{
-	raw_sock = socket(AF_PACKET, SOCK_RAW, 0);
-	if (raw_sock < 0) {
-		log_error("dhcpv4: socket(AF_PACKET, SOCK_RAW): %s\n", strerror(errno));
-		return;
-	}
-
-	fcntl(raw_sock, F_SETFL, O_NONBLOCK);
-	fcntl(raw_sock, F_SETFD, FD_CLOEXEC);
-}
 
 static struct dhcpv4_iprange *parse_range(const char *str)
 {
@@ -128,7 +114,7 @@ struct dhcpv4_serv *dhcpv4_create(struct triton_context_t *ctx, const char *ifna
 	memset(&ifr, 0, sizeof(ifr));
 
 	strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-	if (ioctl(sock_fd, SIOCGIFINDEX, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFINDEX, &ifr)) {
 		log_error("dhcpv4(%s): ioctl(SIOCGIFINDEX): %s\n", ifname, strerror(errno));
 		return NULL;
 	}
@@ -140,44 +126,43 @@ struct dhcpv4_serv *dhcpv4_create(struct triton_context_t *ctx, const char *ifna
 	addr.sin_port = htons(DHCP_SERV_PORT);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	sock = net->socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-	if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
+	if (net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f)))
 		log_error("setsockopt(SO_REUSEADDR): %s\n", strerror(errno));
 
-
-	if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &f, sizeof(f))) {
 		log_error("setsockopt(SO_BROADCAST): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (setsockopt(sock, SOL_SOCKET, SO_NO_CHECK, &f, sizeof(f))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_NO_CHECK, &f, sizeof(f))) {
 		log_error("setsockopt(SO_NO_CHECK): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &f, sizeof(f))) {
+	if (net->setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &f, sizeof(f))) {
 		log_error("setsockopt(IP_PKTINFO): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (bind(sock, (struct sockaddr*)&addr, sizeof(addr))) {
+	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
 		log_error("bind: %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname))) {
+	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname))) {
 		log_error("setsockopt(SO_BINDTODEVICE): %s\n", strerror(errno));
 		goto out_err;
 	}
 
-	if (ioctl(sock, SIOCGIFHWADDR, &ifr)) {
+	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr)) {
 		log_error("dhcpv4(%s): ioctl(SIOCGIFHWADDR): %s\n", ifname, strerror(errno));
 		goto out_err;
 	}
 
-	fcntl(sock, F_SETFL, O_NONBLOCK);
 	fcntl(sock, F_SETFD, fcntl(sock, F_GETFD) | FD_CLOEXEC);
+	net->set_nonblocking(sock, 1);
 
 	serv = _malloc(sizeof(*serv));
 	memset(serv, 0, sizeof(*serv));
@@ -540,7 +525,7 @@ static int dhcpv4_read(struct triton_md_handler_t *h)
 		iov.iov_base = pack->data;
 		iov.iov_len = BUF_SIZE;
 
-		n = recvmsg(h->fd, &msg, 0);
+		n = net->recvmsg(h->fd, &msg, 0);
 		if (n == -1) {
 			mempool_free(pack);
 			if (errno == EAGAIN)
@@ -691,7 +676,7 @@ static int dhcpv4_send_raw(struct dhcpv4_serv *serv, struct dhcpv4_packet *pack,
 	hdr->ip.tot_len = ntohs(sizeof(hdr->ip) + sizeof(hdr->udp) + len);
 	hdr->ip.check = ip_csum((uint16_t *)&hdr->ip, sizeof(hdr->ip));
 
-	n = sendto(raw_sock, hdr, sizeof(*hdr) + len, 0, (struct sockaddr *)&ll_addr, sizeof(ll_addr));
+	n = net->sendto(net->rsock, hdr, sizeof(*hdr) + len, 0, (struct sockaddr *)&ll_addr, sizeof(ll_addr));
 	if (n != len)
 		return -1;
 
@@ -714,7 +699,7 @@ static int dhcpv4_send_udp(struct dhcpv4_serv *serv, struct dhcpv4_packet *pack,
 		len = 300;
 	}
 
-	n = sendto(serv->hnd.fd, pack->data, len, 0, (struct sockaddr *)&addr, sizeof(addr));
+	n = net->sendto(serv->hnd.fd, pack->data, len, 0, (struct sockaddr *)&addr, sizeof(addr));
 	if (n != len)
 		return -1;
 
@@ -1365,8 +1350,6 @@ static void init()
 {
 	pack_pool = mempool_create(BUF_SIZE + sizeof(struct dhcpv4_packet));
 	opt_pool = mempool_create(sizeof(struct dhcpv4_option));
-
-	open_raw_sock();
 
 	load_config();
 

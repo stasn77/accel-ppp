@@ -82,6 +82,7 @@ void __export ap_session_set_ifindex(struct ap_session *ses)
 {
 	struct rtnl_link_stats64 stats;
 
+	net = ses->net;
 	if (iplink_get_stats(ses->ifindex, &stats))
 		log_ppp_warn("failed to get interface statistics\n");
 	else {
@@ -256,6 +257,16 @@ void __export ap_session_finished(struct ap_session *ses)
 		ap_session_vrf(ses, NULL, 0);
 #endif
 
+	if (ses->net != def_net) {
+		struct ap_net *pnet = ses->net;
+		if (!net->move_link(def_net, ses->ifindex)) {
+			pnet->release(pnet);
+			net = ses->net = def_net;
+			ses->ifindex = ses->net->get_ifindex(ses->ifname);
+		} else
+			log_ppp_warn("failed to attach to default namespace, %s\n", ses->ifname);
+	}
+
 	if (ses->net)
 		ses->net->release(ses->net);
 
@@ -396,6 +407,7 @@ int __export ap_session_read_stats(struct ap_session *ses, struct rtnl_link_stat
 	if (!stats)
 		stats = &lstats;
 
+	net = ses->net;
 	if (iplink_get_stats(ses->ifindex, stats)) {
 		log_ppp_warn("failed to get interface statistics\n");
 		return -1;
