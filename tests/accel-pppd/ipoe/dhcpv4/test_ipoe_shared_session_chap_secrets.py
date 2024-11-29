@@ -4,8 +4,8 @@ import time
 
 
 @pytest.fixture()
-def chap_secrets_config():
-    return "loginCSAB     *           pass123   192.0.2.37"
+def chap_secrets_config(veth_pair_netns):
+    return veth_pair_netns["veth_a"] + "     *           pass123   192.0.2.57"
 
 
 @pytest.fixture()
@@ -13,15 +13,18 @@ def accel_pppd_config(veth_pair_netns, chap_secrets_config_file):
     print(
         "accel_pppd_config veth_pair_netns: "
         + str(veth_pair_netns)
-        + "chap_secrets_config_file"
+        + "chap_secrets_config_file: "
         + str(chap_secrets_config_file)
     )
     return (
         """
     [modules]
+    connlimit
     chap-secrets
-    pppoe
-    auth_pap
+    ipoe
+
+    [cli]
+    tcp=127.0.0.1:2001
 
     [core]
     log-error=/dev/stderr
@@ -32,47 +35,32 @@ def accel_pppd_config(veth_pair_netns, chap_secrets_config_file):
     log-emerg=/dev/stderr
     level=5
 
-    [cli]
-    tcp=127.0.0.1:2001
-
-    [pppoe]
-    interface="""
-        + veth_pair_netns["veth_a"]
+    [ipoe]
+    username=ifname
+    password=pass123
+    verbose=5
+    start=dhcpv4
+    shared=1
+    gw-ip-address=192.0.2.1/24
+    interface=re:."""
+        + veth_pair_netns["veth_a"][1:]
         + """
     [chap-secrets]
-    gw-ip-address=192.0.2.1
     chap-secrets="""
         + chap_secrets_config_file
     )
 
 
-@pytest.fixture()
-def pppd_config(veth_pair_netns):
-    print("pppd_config veth_pair_netns: " + str(veth_pair_netns))
-    return (
-        """
-    nodetach
-    noipdefault
-    defaultroute
-    connect /bin/true
-    noauth
-    persist
-    mtu 1492
-    noaccomp
-    default-asyncmap
-    user loginCSAB
-    password pass123
-    nic-"""
-        + veth_pair_netns["veth_b"]
-    )
-
-
-# test pppoe session without auth check
+# test dhcpv4 shared session without auth check
+@pytest.mark.dependency(depends=["ipoe_driver_loaded"], scope="session")
+@pytest.mark.ipoe_driver
 @pytest.mark.chap_secrets
-def test_pppoe_session_chap_secrets(pppd_instance, accel_cmd):
+def test_ipoe_shared_session_chap_secrets(
+    dhclient_instance, accel_cmd, veth_pair_netns
+):
 
-    # test that pppd (with accel-pppd) started successfully
-    assert pppd_instance["is_started"]
+    # test that dhclient (with accel-pppd) started successfully
+    assert dhclient_instance["is_started"]
 
     # wait until session is started
     max_wait_time = 10.0
@@ -82,15 +70,15 @@ def test_pppoe_session_chap_secrets(pppd_instance, accel_cmd):
         (exit, out, err) = process.run(
             [
                 accel_cmd,
-                "show sessions match username log.nCSAB username,ip,state",
+                "show sessions called-sid,ip,state",
             ]
         )
         assert exit == 0  # accel-cmd fails
         # print(out)
-        if "loginCSAB" in out and "192.0.2.37" in out and "active" in out:
+        if veth_pair_netns["veth_a"] in out and "192.0.2.57" in out and "active" in out:
             # session is found
             print(
-                "test_pppoe_session_chap_secrets: session found in (sec): "
+                "test_ipoe_session_chap_secrets: session found in (sec): "
                 + str(sleep_time)
             )
             is_started = True
@@ -98,7 +86,7 @@ def test_pppoe_session_chap_secrets(pppd_instance, accel_cmd):
         time.sleep(0.1)
         sleep_time += 0.1
 
-    print("test_pppoe_session_chap_secrets: last accel-cmd out: " + out)
+    print("test_ipoe_shared_session_chap_secrets: last accel-cmd out: " + out)
 
     # test that session is started
     assert is_started == True
