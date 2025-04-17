@@ -3237,7 +3237,8 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			goto out_err;
 		}
 
-		net->getsockname(sock, (struct sockaddr *)&addr, (socklen_t *)&len);
+//		net->getsockname(sock, (struct sockaddr *)&addr, (socklen_t *)&len);
+		getsockname(sock, (struct sockaddr*)&addr, &len);
 		opt_giaddr = addr.sin_addr.s_addr;
 
 		close(sock);
