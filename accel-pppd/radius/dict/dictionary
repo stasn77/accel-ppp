@@ -82,3 +82,5 @@ $INCLUDE dictionary.cisco
 $INCLUDE dictionary.alcatel
 $INCLUDE dictionary.mikrotik
 $INCLUDE dictionary.dhcp
+
+$INCLUDE dictionary.redback
