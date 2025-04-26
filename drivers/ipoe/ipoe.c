@@ -46,7 +46,7 @@
 #define IPOE_MAGIC 0x55aa
 #define IPOE_MAGIC2 0x67f8bc32
 */
-#define IPOE_QUEUE_LEN 100
+#define IPOE_QUEUE_LEN 700
 #define IPOE_RATE_U 3000 //3s
 #define IPOE_TIMEOUT_U 30 //5s
 
