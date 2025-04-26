@@ -1,0 +1,10 @@
+
+VENDOR		RedbackDHCP				2352
+
+BEGIN-VENDOR	RedbackDHCP
+
+#ATTRIBUTE	DHCP-Option82				245	octets
+ATTRIBUTE	DHCP-Agent-Remote-Id			96	octets
+ATTRIBUTE	DHCP-Agent-Circuit-Id			97	octets
+
+END-VENDOR	RedbackDHCP
