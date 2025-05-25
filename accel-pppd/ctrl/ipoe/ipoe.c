@@ -2055,6 +2055,12 @@ static void __ipoe_recv_dhcpv4(struct dhcpv4_serv *dhcpv4, struct dhcpv4_packet 
 				goto out;
 			}
 
+			if (ses->UP == 1) {
+				log_ppp_warn("ipoe: %s: DHCP Discover packet received for UP session %s\n", serv->ifname, ses->username);
+				triton_context_call(ses->ctrl.ctx, (triton_event_func)__ipoe_session_terminate, &ses->ses);
+				goto out;
+			}
+
 			if (serv->opt_check_mac_change) {
 				if ((opt82_ses && ses != opt82_ses) || (!opt82_ses && pack->relay_agent)) {
 					dhcpv4_packet_ref(pack);
