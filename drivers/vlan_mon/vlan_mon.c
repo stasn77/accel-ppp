@@ -720,6 +720,9 @@ static struct genl_family vlan_mon_nl_family = {
 static struct packet_type vlan_pt __read_mostly = {
 	.type = __constant_htons(ETH_P_ALL),
 	.func = vlan_pt_recv,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
+	.af_packet_net = &init_net,
+#endif
 };
 
 static int __init vlan_mon_init(void)
