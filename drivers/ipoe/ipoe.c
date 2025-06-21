@@ -647,7 +647,11 @@ nl_err:
 	if (!list_empty(&ipoe_list2_u))
 		mod_timer(&ipoe_timer_u, jiffies + IPOE_TIMEOUT_U * HZ);
 	else
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,15,0)
 		del_timer(&ipoe_timer_u);
+#else
+		timer_delete(&ipoe_timer_u);
+#endif
 }
 
 static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev)
@@ -987,7 +991,11 @@ static void ipoe_netdev_setup(struct net_device *dev)
 	dev->addr_len = ETH_ALEN;
 /*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
+	dev->netns_immutable = true;
+#else
 	dev->netns_local = true;
+#endif
 #else
 	dev->features  |= NETIF_F_NETNS_LOCAL;
 #endif
@@ -1861,7 +1869,11 @@ static void __exit ipoe_fini(void)
 	flush_work(&ipoe_queue_work);
 	skb_queue_purge(&ipoe_queue);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,15,0)
 	del_timer(&ipoe_timer_u);
+#else
+	timer_delete(&ipoe_timer_u);
+#endif
 
 	rcu_barrier();
 
