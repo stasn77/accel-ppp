@@ -81,7 +81,7 @@ static struct rad_req_t *__rad_req_alloc(struct radius_pd_t *rpd, int code, cons
 		req->pack->secret = strdup(req->serv->secret);
 		if (rad_packet_add_octets(req->pack, NULL, "Message-Authenticator", buf, HMAC_MD5_LEN)) {
                         free(req->pack->secret);
-                        req->pack->secret == NULL;
+                        req->pack->secret = NULL;
 			goto out_err;
                 }
 	}
