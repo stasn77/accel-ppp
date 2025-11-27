@@ -7,6 +7,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/inetdevice.h>
+#include <linux/idr.h>
 #include <linux/in.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
@@ -38,15 +39,16 @@
 #include "ipoe.h"
 #include "version.h"
 
+#define IPOE_HASH_SHIFT 8
+#define IPOE_HASH_BITS (1<<IPOE_HASH_SHIFT)
+/*
 #define BEGIN_UPDATE 1
 #define UPDATE 2
 #define END_UPDATE 3
 
-#define IPOE_HASH_BITS 0xff
-
 #define IPOE_MAGIC 0x55aa
 #define IPOE_MAGIC2 0x67f8bc32
-
+*/
 #define IPOE_QUEUE_LEN 100
 #define IPOE_RATE_U 3000 //3s
 #define IPOE_TIMEOUT_U 30 //5s
@@ -75,24 +77,25 @@ struct ipoe_stats {
 	u64 packets;
 	u64 bytes;
 };
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+struct ida ses_ida;
+#endif
 struct ipoe_session {
-	struct list_head entry; //ipoe_list
+	struct hlist_node entry; //ipoe_list
 	struct list_head entry2; //ipoe_list2
-	struct list_head entry3; //ipoe_list3
+	struct hlist_node entry3; //ipoe_list3
 
 	__be32 addr;
 	__be32 peer_addr;
 	__be32 gw;
 
-	union {
-		__u8 hwaddr[ETH_ALEN];
-		__u64 hwaddr_u;
-	} u;
+	u8 hwaddr[ETH_ALEN] __aligned(sizeof(u16));
 
 	struct net_device *dev;
 	struct net_device *link_dev;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	int ida;
+#endif
 	atomic_t refs;
 
 	struct ipoe_stats __percpu *rx_stats;
@@ -124,7 +127,6 @@ struct ipoe_entry_u {
 	unsigned long tstamp;
 };
 
-
 struct _arphdr {
 	__be16		ar_hrd;		/* format of hardware address	*/
 	__be16		ar_pro;		/* format of protocol address	*/
@@ -136,14 +138,13 @@ struct _arphdr {
 	  *	 Ethernet looks like this : This bit is variable sized however...
 	  */
 	unsigned char		ar_sha[ETH_ALEN];	/* sender hardware address	*/
-	__be32		ar_sip;		/* sender IP address		*/
+	__be32			ar_sip;			/* sender IP address		*/
 	unsigned char		ar_tha[ETH_ALEN];	/* target hardware address	*/
-	__be32		ar_tip;		/* target IP address		*/
+	__be32			ar_tip;			/* target IP address		*/
 } __packed;
 
-
-static struct list_head ipoe_list[IPOE_HASH_BITS + 1];
-static struct list_head ipoe_list3[IPOE_HASH_BITS + 1];
+static struct hlist_head ipoe_list[IPOE_HASH_BITS + 1];
+static struct hlist_head ipoe_list3[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_list1_u[IPOE_HASH_BITS + 1];
 static struct list_head ipoe_excl_list[IPOE_HASH_BITS + 1];
 static LIST_HEAD(ipoe_list2);
@@ -159,7 +160,6 @@ static struct work_struct ipoe_queue_work;
 static struct sk_buff_head ipoe_queue;
 
 
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0)
 static void ipoe_start_queue_work(struct timer_list *unused);
 static DEFINE_TIMER(ipoe_timer_u, ipoe_start_queue_work);
@@ -168,12 +168,12 @@ static void ipoe_start_queue_work(unsigned long);
 static DEFINE_TIMER(ipoe_timer_u, ipoe_start_queue_work, 0, 0);
 #endif
 
-static struct ipoe_session *ipoe_lookup(__be32 addr);
+static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev);
 static int ipoe_do_nat(struct sk_buff *skb, __be32 new_addr, int to_peer);
 static int ipoe_queue_u(struct sk_buff *skb, __be32 addr);
 static int ipoe_lookup1_u(__be32 addr, unsigned long *ts);
 
-static struct net *pick_net(struct sk_buff *skb);
+static inline struct net *pick_net(struct sk_buff *skb);
 
 static const struct net_device_ops ipoe_netdev_ops;
 
@@ -200,13 +200,25 @@ static struct genl_multicast_group ipoe_nl_mcg;
 #define nla_nest_start_noflag(skb, attr) nla_nest_start(skb, attr)
 #endif
 
-static inline int hash_addr(__be32 addr)
+static inline u32 hash_addr(__be32 addr)
 {
-#ifdef __LITTLE_ENDIAN
-	return ((addr >> 24) ^ (addr >> 16)) & IPOE_HASH_BITS;
+    u32 val = (__force u32) addr;
+
+    return hash_32(val, IPOE_HASH_SHIFT);
+}
+
+/* Hash Ethernet address */
+static inline u32 eth_hash(const __u8 *addr)
+{
+	u64 value = get_unaligned((u64 *)addr);
+
+	/* only want 6 bytes */
+#ifdef __BIG_ENDIAN
+	value >>= 16;
 #else
-	return (addr  ^ (addr >> 8)) & IPOE_HASH_BITS;
+	value <<= 16;
 #endif
+	return hash_64(value, IPOE_HASH_SHIFT);
 }
 
 static void ipoe_update_stats(struct sk_buff *skb, struct ipoe_stats *st, int corr)
@@ -403,7 +415,7 @@ static int ipoe_do_nat(struct sk_buff *skb, __be32 new_addr, int to_peer)
 	return 0;
 }
 
-static struct net *pick_net(struct sk_buff *skb)
+static inline struct net *pick_net(struct sk_buff *skb)
 {
 #ifdef CONFIG_NET_NS
 	const struct dst_entry *dst;
@@ -417,40 +429,12 @@ static struct net *pick_net(struct sk_buff *skb)
 	return &init_net;
 }
 
-/*static int ipoe_route4(struct sk_buff *skb, __be32 gw, int oif)
-{
-	const struct iphdr *iph = ip_hdr(skb);
-	struct net *net = pick_net(skb);
-	struct rtable *rt;
-
-	struct flowi4 fl4;
-
-	memset(&fl4, 0, sizeof(fl4));
-	fl4.daddr = gw;
-	fl4.flowi4_oif = oif;
-	fl4.flowi4_tos = RT_TOS(iph->tos) | RTO_ONLINK;
-	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
-	rt = ip_route_output_key(net, &fl4);
-	if (IS_ERR(rt))
-		return -1;
-
-	skb_dst_drop(skb);
-	skb_dst_set(skb, &rt->dst);
-	skb->dev = rt->dst.dev;
-
-	return 0;
-}*/
-
 static netdev_tx_t ipoe_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ipoe_session *ses = netdev_priv(dev);
 	struct net_device_stats *stats = &dev->stats;
 	struct iphdr  *iph;
 	struct sk_buff *skb1;
-	//struct dst_entry *dst;
-	/*struct arphdr *arp;
-	unsigned char *arp_ptr;
-	__be32 tip;*/
 	int noff;
 
 	if (!ses->peer_addr)
@@ -464,9 +448,6 @@ static netdev_tx_t ipoe_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		iph = ip_hdr(skb);
 
-		//pr_info("ipoe: xmit %08x %08x\n", iph->saddr, iph->daddr);
-
-		//pr_info("ipoe: xmit1 %08x %08x\n", iph->saddr, iph->daddr);
 		if (iph->daddr == ses->addr) {
 			if (skb_shared(skb)) {
 				skb1 = skb_clone(skb, GFP_ATOMIC);
@@ -479,42 +460,14 @@ static netdev_tx_t ipoe_xmit(struct sk_buff *skb, struct net_device *dev)
 			if (ipoe_do_nat(skb, ses->peer_addr, 1))
 				goto drop;
 		}
-
-		/*if (ses->gw) {
-			iph = ip_hdr(skb);
-
-			ip_send_check(iph);
-
-			if (ipoe_route4(skb, ses->gw, ses->link_dev->ifindex))
-				goto drop;
-
-			pskb_pull(skb, ETH_HLEN);
-			skb_reset_network_header(skb);
-
-			//skb->skb_iif = dev->ifindex;
-
-			//pr_info("ipoe: xmit2 %08x %08x %p %p\n", iph->saddr, iph->daddr, dev, skb->dev);
-			nf_reset(skb);
-			secpath_reset(skb);
-			skb->vlan_tci = 0;
-			skb_set_queue_mapping(skb, 0);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,0)
-			ip_local_out(pick_net(skb), skb->sk, skb);
-#else
-			ip_local_out(skb);
-#endif
-
-			return NETDEV_TX_OK;
-		} else*/
 	}
 
 	ipoe_update_stats(skb, this_cpu_ptr(ses->tx_stats), ETH_HLEN);
 
 	if (ses->link_dev) {
 		struct ethhdr *eth = (struct ethhdr *)skb->data;
-		memcpy(eth->h_dest, ses->u.hwaddr, ETH_ALEN);
-		memcpy(eth->h_source, ses->link_dev->dev_addr, ETH_ALEN);
+		ether_addr_copy(eth->h_dest, ses->hwaddr);
+		ether_addr_copy(eth->h_source, ses->link_dev->dev_addr);
 
 		skb->dev = ses->link_dev;
 		dev_queue_xmit(skb);
@@ -567,15 +520,11 @@ static int ipoe_queue_u(struct sk_buff *skb, __u32 addr)
 {
 	unsigned long ts;
 
-	if (ipoe_lookup1_u(addr, &ts) && jiffies_to_msecs(jiffies - ts) < IPOE_RATE_U) {
-		//pr_info("not queue %08x\n", addr);
+	if (ipoe_lookup1_u(addr, &ts) && jiffies_to_msecs(jiffies - ts) < IPOE_RATE_U)
 		return -1;
-	}
 
 	if (skb_queue_len(&ipoe_queue) > IPOE_QUEUE_LEN)
 		return -1;
-
-	//pr_info("queue %08x\n", addr);
 
 	skb_queue_tail(&ipoe_queue, skb);
 	schedule_work(&ipoe_queue_work);
@@ -625,15 +574,12 @@ static void ipoe_process_queue(struct work_struct *w)
 				list_add_tail_rcu(&e->entry1, &ipoe_list1_u[hash_addr(saddr)]);
 				list_add_tail(&e->entry2, &ipoe_list2_u);
 
-				//pr_info("create %08x\n", e->addr);
 			} else if (jiffies_to_msecs(jiffies - e->tstamp) < IPOE_RATE_U) {
-				//pr_info("skip %08x\n", e->addr);
 				kfree_skb(skb);
 				continue;
 			} else {
 				e->tstamp = jiffies;
 				list_move_tail(&e->entry2, &ipoe_list2_u);
-				//pr_info("update %08x\n", e->addr);
 			}
 
 			if (!report_skb) {
@@ -693,7 +639,6 @@ nl_err:
 			if (jiffies_to_msecs(jiffies - e->tstamp) < IPOE_TIMEOUT_U * 1000)
 				break;
 
-			//pr_info("free %08x\n", e->addr);
 			list_del(&e->entry2);
 			list_del_rcu(&e->entry1);
 			kfree_rcu(e, rcu_head);
@@ -721,17 +666,16 @@ nl_err:
 #endif
 }
 
-static struct ipoe_session *ipoe_lookup(__be32 addr)
+static struct ipoe_session *ipoe_lookup(__be32 addr, struct net_device *dev)
 {
 	struct ipoe_session *ses;
-	struct list_head *head;
-
-	head = &ipoe_list[hash_addr(addr)];
+	u32 idx = hash_addr(addr);
 
 	rcu_read_lock();
 
-	list_for_each_entry_rcu(ses, head, entry) {
-		if (ses->peer_addr == addr) {
+	hlist_for_each_entry_rcu(ses, &ipoe_list[idx], entry) {
+		if (ses->peer_addr == addr &&
+		   (!dev || (ses->link_dev == dev))) {
 			atomic_inc(&ses->refs);
 			rcu_read_unlock();
 			return ses;
@@ -743,24 +687,17 @@ static struct ipoe_session *ipoe_lookup(__be32 addr)
 	return NULL;
 }
 
-static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr)
+static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr, struct net_device *dev, __be32 addr)
 {
 	struct ipoe_session *ses;
-	struct list_head *head;
-	union {
-		__u8 hwaddr[ETH_ALEN];
-		__u64 hwaddr_u;
-	} u;
-
-	u.hwaddr_u = 0;
-	memcpy(u.hwaddr, hwaddr, ETH_ALEN);
-
-	head = &ipoe_list3[hwaddr[ETH_ALEN - 1]];
+	u32 idx = eth_hash(hwaddr);
 
 	rcu_read_lock();
 
-	list_for_each_entry_rcu(ses, head, entry3) {
-		if (ses->u.hwaddr_u == u.hwaddr_u) {
+	hlist_for_each_entry_rcu(ses, &ipoe_list3[idx], entry3) {
+		if (ether_addr_equal_64bits(ses->hwaddr, hwaddr) &&
+		   (!dev || (ses->link_dev == dev)) &&
+		   (!addr || (ses->peer_addr == addr))) {
 			atomic_inc(&ses->refs);
 			rcu_read_unlock();
 			return ses;
@@ -772,65 +709,57 @@ static struct ipoe_session *ipoe_lookup_hwaddr(__u8 *hwaddr)
 	return NULL;
 }
 
-
-static struct ipoe_session *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr, struct net_device **dev)
+static struct net_device *ipoe_lookup_rt4(struct sk_buff *skb, __be32 addr)
 {
+	struct net_device *out = NULL;
 	struct net *net = pick_net(skb);
-	struct rtable *rt;
-	struct ipoe_session *ses;
 
-	struct flowi4 fl4;
-
-	memset(&fl4, 0, sizeof(fl4));
-	fl4.daddr = addr;
+	struct flowi4 fl4 = {
+		.daddr = addr,
+//		.flowi4_tos = RT_TOS(0),
+		.flowi4_scope = RT_SCOPE_UNIVERSE,
+		.flowi4_oif = (netif_is_l3_slave(skb->dev) ? skb->dev->ifindex : 0),
+	};
 	ipoe_flowi4_set_tos(&fl4, RT_TOS(0));
-	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
-	rt = ip_route_output_key(net, &fl4);
-	if (IS_ERR(rt))
-		return NULL;
+	struct rtable *rt = ip_route_output_key_hash(net, &fl4, NULL);
 
-	*dev      = rt->dst.dev;
-
-	if ((*dev)->netdev_ops != &ipoe_netdev_ops) {
+	if (!IS_ERR(rt)) {
+		out = rt->dst.dev;
 		ip_rt_put(rt);
-		return NULL;
 	}
-
-	ses = netdev_priv(*dev);
-	atomic_inc(&ses->refs);
-
-	ip_rt_put(rt);
-
-	return ses;
+	return out;
 }
 
-static struct ipoe_session *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_addr *addr, struct net_device **dev)
+static struct net_device *ipoe_lookup_rt6(struct sk_buff *skb, const struct in6_addr *addr)
 {
+	struct net_device *out = NULL;
 	struct net *net = pick_net(skb);
 	struct dst_entry *dst;
-	struct flowi6 fl6;
-	struct ipoe_session *ses;
 
-	memset(&fl6, 0, sizeof(fl6));
-	fl6.daddr = *addr;
+	struct flowi6 fl6 = {
+		.daddr = *addr,
+		.flowi6_oif = (netif_is_l3_slave(skb->dev) ? skb->dev->ifindex : 0),
+	};
 
 	dst = ip6_route_output(net, NULL, &fl6);
 
-	if (!dst)
-		return NULL;
-
-	*dev = dst->dev;
-
-	if (dst->error || dst->dev->netdev_ops != &ipoe_netdev_ops) {
-		dst_release(dst);
-		return NULL;
-	}
-	ses = netdev_priv(*dev);
-	atomic_inc(&ses->refs);
+	if (dst && !dst->error)
+		out = dst->dev;
 
 	dst_release(dst);
+	return out;
+}
 
-	return ses;
+static bool is_unnumbered(struct net_device *dev, __be32 addr)
+{
+	struct in_ifaddr *ifa;
+
+	for(ifa = rcu_dereference(dev->ip_ptr->ifa_list);
+		ifa; ifa = rcu_dereference(ifa->ifa_next))
+		if (ifa->ifa_address == addr && ifa->ifa_prefixlen == 32)
+			return true;
+
+	return false;
 }
 
 static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
@@ -865,10 +794,25 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 		if (!saddr || saddr == 0xffffffff)
 			return RX_HANDLER_PASS;
 
-		ses = ipoe_lookup_rt4(skb, saddr, &out);
-		if (!ses) {
-			if (i->mode == 0)
+		if (i->mode < 3) {
+			if (is_unnumbered(dev, saddr))
 				return RX_HANDLER_PASS;
+			ses = ipoe_lookup_hwaddr(eth->h_source, dev, saddr);
+			if (!ses) // && i->mode == 0)
+				ses = ipoe_lookup(saddr, dev);
+		} else
+			ses = ipoe_lookup(saddr, dev);
+
+		if (!ses) {
+			if (i->mode == 0) {
+				ses = ipoe_lookup_hwaddr(eth->h_source, dev, 0);
+				if (ses)
+					goto found;
+				else
+					return RX_HANDLER_PASS;
+			}
+
+			out = ipoe_lookup_rt4(skb, saddr);
 
 			if (out == dev && i->mode == 2)
 				return RX_HANDLER_PASS;
@@ -895,34 +839,31 @@ static rx_handler_result_t ipoe_recv(struct sk_buff **pskb)
 
 		ip6h = ipv6_hdr(skb);
 
-		if (ip6h->saddr.s6_addr16[0] == htons(0xfe80)) {
-			ses = ipoe_lookup_hwaddr(eth->h_source);
-			if (!ses)
+		ses = ipoe_lookup_hwaddr(eth->h_source, dev, 0);
+		if (!ses) {
+			if (ip6h->saddr.s6_addr16[0] == htons(0xfe80))
 				return RX_HANDLER_PASS;
-		} else {
-			ses = ipoe_lookup_rt6(skb, &ip6h->saddr, &out);
-			if (!ses) {
-				if (i->mode == 0)
-					return RX_HANDLER_PASS;
 
-				if (out == dev && i->mode == 2)
-					return RX_HANDLER_PASS;
+			if (i->mode == 0)
+				return RX_HANDLER_PASS;
 
-				kfree_skb(skb);
-				return RX_HANDLER_CONSUMED;
-			}
+			out = ipoe_lookup_rt6(skb, &ip6h->saddr);
+
+			if (out == dev && i->mode == 2)
+				return RX_HANDLER_PASS;
+
+			kfree_skb(skb);
+			return RX_HANDLER_CONSUMED;
 		}
 	} else
 		return RX_HANDLER_PASS;
 
-
-	//pr_info("ipoe: recv %08x %08x\n", iph->saddr, iph->daddr);
-
+found:
 	stats = &ses->dev->stats;
 
 	if (ses->gw)
-		memcpy(ses->u.hwaddr, eth->h_source, ETH_ALEN);
-	else if (memcmp(eth->h_source, ses->u.hwaddr, ETH_ALEN))
+		ether_addr_copy(ses->hwaddr, eth->h_source);
+	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr))
 		goto drop;
 
 	if (skb->protocol == htons(ETH_P_IP) && ses->addr > 1 && check_nat_required(skb, ses->link_dev) && ipoe_do_nat(skb, ses->addr, 0))
@@ -944,66 +885,6 @@ drop:
 	kfree_skb(skb);
 	return RX_HANDLER_CONSUMED;
 }
-
-/*#if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
-static unsigned int ipt_out_hook(unsigned int hook, struct sk_buff *skb, const struct net_device *in, const struct net_device *out, int (*okfn)(struct sk_buff *skb))
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,1,0)
-static unsigned int ipt_out_hook(const struct nf_hook_ops *ops, struct sk_buff *skb, const struct net_device *in, const struct net_device *out, int (*okfn)(struct sk_buff *skb))
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,4,0)
-static unsigned int ipt_out_hook(const struct nf_hook_ops *ops, struct sk_buff *skb, const struct nf_hook_state *state)
-#else
-static unsigned int ipt_out_hook(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
-#endif
-{
-	int noff, iif;
-	struct iphdr *iph;
-	struct ipoe_session *ses;
-	unsigned char *cb_ptr;
-	struct net_device *dev;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,2,0)
-	struct net_device *out = state->out;
-#endif
-
-	if (!out->atalk_ptr)
-		return NF_ACCEPT;
-
-	if (skb->protocol != htons(ETH_P_IP))
-		return NF_ACCEPT;
-
-	cb_ptr = skb->cb + sizeof(skb->cb) - 2;
-	if (*(__u16 *)cb_ptr == IPOE_MAGIC)
-		return NF_ACCEPT;
-
-	noff = skb_network_offset(skb);
-
-	if (!pskb_may_pull(skb, sizeof(*iph) + noff))
-		return NF_ACCEPT;
-
-	iph = ip_hdr(skb);
-
-	if (ipoe_check_exclude(iph->daddr))
-		return NF_ACCEPT;
-
-	ses = ipoe_lookup_rt(skb, iph->daddr, &dev);
-	if (!ses)
-		return NF_ACCEPT;
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-	iif = skb->skb_iif;
-#else
-	iif = skb->iif;
-#endif
-
-	if (iif == ses->dev->ifindex) {
-		atomic_dec(&ses->refs);
-		return NF_ACCEPT;
-	}
-
-	skb->dev = ses->dev;
-	atomic_dec(&ses->refs);
-
-	return NF_ACCEPT;
-}*/
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,11,0)
 static struct rtnl_link_stats64 *ipoe_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
@@ -1121,6 +1002,7 @@ static void ipoe_netdev_setup(struct net_device *dev)
 	dev->iflink = 0;
 #endif
 	dev->addr_len = ETH_ALEN;
+/*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 	dev->netns_immutable = true;
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
@@ -1128,30 +1010,30 @@ static void ipoe_netdev_setup(struct net_device *dev)
 #else
 	dev->features  |= NETIF_F_NETNS_LOCAL;
 #endif
+*/
 	dev->features  &= ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
 	dev->header_ops	= &ipoe_hard_header_ops;
 	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
 }
 
-static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, const __u8 *hwaddr)
+static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_device *link_dev, const __u8 *hwaddr)
 {
 	struct ipoe_session *ses;
-	struct net_device *dev, *link_dev = NULL;
+	struct net_device *dev;
 	char name[IFNAMSIZ];
 	int r = -EINVAL;
-	int h = hash_addr(peer_addr);
-	//struct in_device *in_dev;
-
-	if (ifindex) {
-		link_dev = dev_get_by_index(&init_net, ifindex);
-		if (!link_dev)
-			return -EINVAL;
-	}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	int ida;
+	ida = ida_alloc(&ses_ida, GFP_ATOMIC);
+	if (ida < 0)
+		goto failed;
+	sprintf(name, "ipoe%d", ida);
+#else
 	sprintf(name, "ipoe%%d");
+#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,17,0)
-	dev = alloc_netdev(sizeof(*ses), name, NET_NAME_UNKNOWN, ipoe_netdev_setup);
+	dev = alloc_netdev(sizeof(*ses), name, NET_NAME_ENUM, ipoe_netdev_setup);
 #else
 	dev = alloc_netdev(sizeof(*ses), name, ipoe_netdev_setup);
 #endif
@@ -1171,12 +1053,16 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	ses = netdev_priv(dev);
 	memset(ses, 0, sizeof(*ses));
 	atomic_set(&ses->refs, 0);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	ses->ida = ida;
+#endif
 	ses->dev = dev;
 	ses->addr = addr;
 	ses->peer_addr = peer_addr;
 	ses->gw = gw;
 	ses->link_dev = link_dev;
-	memcpy(ses->u.hwaddr, hwaddr, ETH_ALEN);
+	ether_addr_copy(ses->hwaddr, hwaddr);
+	
 	ses->rx_stats = alloc_percpu(struct ipoe_stats);
 	ses->tx_stats = alloc_percpu(struct ipoe_stats);
 	if (!ses->rx_stats || !ses->tx_stats) {
@@ -1189,7 +1075,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
 		dev_addr_mod(dev, 0, link_dev->dev_addr, ETH_ALEN);
 #else
-		memcpy(dev->dev_addr, link_dev->dev_addr, ETH_ALEN);
+		ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
 #endif
 		memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
 	}
@@ -1199,15 +1085,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	else
 		dev->flags &= ~IFF_NOARP;
 
-	/*in_dev = __in_dev_get_rtnl(dev);
-	if (in_dev) {
-		if (addr == 1)
-			IPV4_DEVCONF(in_dev->cnf, RP_FILTER) = 0;
-		else
-			IPV4_DEVCONF(in_dev->cnf, RP_FILTER) = 1;
-	}*/
-
-	dev->tx_queue_len = 100;
+	dev->tx_queue_len = IPOE_QUEUE_LEN;
 
 	rtnl_lock();
 	r = register_netdevice(dev);
@@ -1219,19 +1097,21 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, int ifindex, co
 	dev_hold(dev);
 #endif
 
-
 	down(&ipoe_wlock);
 	if (peer_addr)
-		list_add_tail_rcu(&ses->entry, &ipoe_list[h]);
+		hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
 	list_add_tail(&ses->entry2, &ipoe_list2);
 	if (link_dev)
-		list_add_tail_rcu(&ses->entry3, &ipoe_list3[ses->u.hwaddr[ETH_ALEN - 1]]);
+		hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	r = dev->ifindex;
 	up(&ipoe_wlock);
 
 	return r;
 
 failed_free:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	ida_free(&ses_ida, ida);
+#endif
 	free_netdev(dev);
 failed:
 	if (link_dev)
@@ -1282,21 +1162,13 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 	void *hdr;
 	__be32 peer_addr = 0, addr = 0, gw = 0;
 	int ifindex = 0;
+	struct net_device *link_dev = NULL;
 	int ret = 0;
 	__u8 hwaddr[ETH_ALEN];
 	struct ipoe_session *ses;
-	//struct net *net = genl_info_net(info);
 
-	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
+	if (info->attrs[IPOE_ATTR_PEER_ADDR])
 		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
-		if (peer_addr) {
-			ses = ipoe_lookup(peer_addr);
-			if (ses) {
-				atomic_dec(&ses->refs);
-				return -EEXIST;
-			}
-		}
-	}
 
 	if (info->attrs[IPOE_ATTR_ADDR])
 		addr = nla_get_be32(info->attrs[IPOE_ATTR_ADDR]);
@@ -1307,10 +1179,24 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[IPOE_ATTR_IFINDEX])
 		ifindex = nla_get_u32(info->attrs[IPOE_ATTR_IFINDEX]);
 
+	if (ifindex) {
+		link_dev = dev_get_by_index(&init_net, ifindex);
+		if (!link_dev)
+			return -EINVAL;
+	}
+
+	if (peer_addr) {
+		ses = ipoe_lookup(peer_addr, link_dev);
+		if (ses) {
+			atomic_dec(&ses->refs);
+			return -EEXIST;
+		}
+	}
+
 	if (info->attrs[IPOE_ATTR_HWADDR])
 		nla_memcpy(hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
 	else
-		memset(hwaddr, 0, sizeof(hwaddr));
+		eth_zero_addr(hwaddr);
 
 	msg = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (!msg) {
@@ -1328,9 +1214,7 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 		goto err_out;
 	}
 
-	//pr_info("ipoe: create %08x %08x %s\n", peer_addr, addr, info->attrs[IPOE_ATTR_IFNAME] ? ifname : "-");
-
-	ret = ipoe_create(peer_addr, addr, gw, ifindex, hwaddr);
+	ret = ipoe_create(peer_addr, addr, gw, link_dev, hwaddr);
 
 	if (ret < 0) {
 		nlmsg_free(msg);
@@ -1379,13 +1263,11 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 
 	ses = netdev_priv(dev);
 
-	//pr_info("ipoe: delete %08x\n", ses->peer_addr);
-
 	if (ses->peer_addr)
-		list_del_rcu(&ses->entry);
+		hlist_del_rcu(&ses->entry);
 	list_del(&ses->entry2);
-	if (ses->u.hwaddr_u)
-		list_del_rcu(&ses->entry3);
+	if (!is_zero_ether_addr(ses->hwaddr))
+		hlist_del_rcu(&ses->entry3);
 
 	up(&ipoe_wlock);
 
@@ -1396,7 +1278,9 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 
 	if (ses->link_dev)
 		dev_put(ses->link_dev);
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	ida_free(&ses_ida, ses->ida);
+#endif
 	unregister_netdev(ses->dev);
 
 	ret = 0;
@@ -1433,32 +1317,6 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 
 	ses = netdev_priv(dev);
 
-	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
-		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
-		if (peer_addr) {
-			ses1 = ipoe_lookup(peer_addr);
-			if (ses1) {
-				atomic_dec(&ses1->refs);
-				if (ses1 != ses) {
-					ret = -EEXIST;
-					goto out_unlock;
-				}
-			}
-		}
-
-		if (ses->peer_addr) {
-			list_del_rcu(&ses->entry);
-			synchronize_rcu();
-		}
-
-		ses->peer_addr = peer_addr;
-
-		if (peer_addr)
-			list_add_tail_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
-		else
-			ses->dev->flags &= ~IFF_UP;
-	}
-
 	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
 		int ifindex = nla_get_u32(info->attrs[IPOE_ATTR_LINK_IFINDEX]);
 
@@ -1475,8 +1333,8 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 
 		if (old_dev) {
 			dev_put(old_dev);
-			list_del_rcu(&ses->entry3);
-			ses->u.hwaddr_u = 0;
+			hlist_del_rcu(&ses->entry3);
+			eth_zero_addr(ses->hwaddr);
 			synchronize_rcu();
 		}
 
@@ -1485,11 +1343,38 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
 			dev_addr_mod(dev, 0, link_dev->dev_addr, ETH_ALEN);
 #else
-			memcpy(dev->dev_addr, link_dev->dev_addr, ETH_ALEN);
+			ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
 #endif
 			memcpy(dev->broadcast, link_dev->broadcast, ETH_ALEN);
 		}
 	}
+
+	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
+		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
+		if (peer_addr) {
+			ses1 = ipoe_lookup(peer_addr, link_dev);
+			if (ses1) {
+				atomic_dec(&ses1->refs);
+				if (ses1 != ses) {
+					ret = -EEXIST;
+					goto out_unlock;
+				}
+			}
+		}
+
+		if (ses->peer_addr) {
+			hlist_del_rcu(&ses->entry);
+			synchronize_rcu();
+		}
+
+		ses->peer_addr = peer_addr;
+
+		if (peer_addr)
+			hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
+		else
+			ses->dev->flags &= ~IFF_UP;
+	}
+
 
 	if (info->attrs[IPOE_ATTR_ADDR]) {
 		ses->addr = nla_get_be32(info->attrs[IPOE_ATTR_ADDR]);
@@ -1511,12 +1396,10 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 		ses->gw = nla_get_u32(info->attrs[IPOE_ATTR_GW_ADDR]);
 
 	if (info->attrs[IPOE_ATTR_HWADDR]) {
-		nla_memcpy(ses->u.hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
+		nla_memcpy(ses->hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
 		if (ses->link_dev)
-			list_add_tail_rcu(&ses->entry3, &ipoe_list3[ses->u.hwaddr[ETH_ALEN - 1]]);
+			hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	}
-
-	//pr_info("ipoe: modify %08x %08x\n", ses->peer_addr, ses->addr);
 
 	ret = 0;
 
@@ -1921,26 +1804,17 @@ static const struct net_device_ops ipoe_netdev_ops = {
 #endif
 };
 
-/*static struct pernet_operations ipoe_net_ops = {
-	.init = ipoe_init_net,
-	.exit = ipoe_exit_net,
-	.id   = &ipoe_net_id,
-	.size = sizeof(struct ipoe_net),
-};*/
-
 static int __init ipoe_init(void)
 {
 	int err, i;
 
 	printk("IPoE session driver v%s\n", ACCEL_PPP_VERSION);
 
-	/*err = register_pernet_device(&ipoe_net_ops);
-	if (err < 0)
-		return err;*/
+	ida_init(&ses_ida);
 
 	for (i = 0; i <= IPOE_HASH_BITS; i++) {
-		INIT_LIST_HEAD(&ipoe_list[i]);
-		INIT_LIST_HEAD(&ipoe_list3[i]);
+		INIT_HLIST_HEAD(&ipoe_list[i]);
+		INIT_HLIST_HEAD(&ipoe_list3[i]);
 		INIT_LIST_HEAD(&ipoe_list1_u[i]);
 		INIT_LIST_HEAD(&ipoe_excl_list[i]);
 	}
@@ -1977,7 +1851,6 @@ static void __exit ipoe_fini(void)
 	struct ipoe_entry_u *e;
 	struct ipoe_session *ses;
 	struct net_device *dev;
-	int i;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0) && RHEL_MAJOR < 7
 	genl_unregister_mc_group(&ipoe_nl_family, &ipoe_nl_mcg);
@@ -2012,9 +1885,6 @@ static void __exit ipoe_fini(void)
 	timer_delete(&ipoe_timer_u);
 #endif
 
-	for (i = 0; i <= IPOE_HASH_BITS; i++)
-		rcu_assign_pointer(ipoe_list[i].next, &ipoe_list[i]);
-
 	rcu_barrier();
 
 	while (!list_empty(&ipoe_list2)) {
@@ -2034,7 +1904,9 @@ static void __exit ipoe_fini(void)
 	}
 
 	clean_excl_list();
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	ida_destroy(&ses_ida);
+#endif
 	synchronize_rcu();
 }
 
