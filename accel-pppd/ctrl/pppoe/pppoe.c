@@ -15,8 +15,6 @@
 #include <printf.h>
 #endif
 
-#include "crypto.h"
-
 #include "events.h"
 #include "triton.h"
 #include "log.h"
@@ -1017,7 +1015,7 @@ static void pppoe_recv_PADI(struct pppoe_serv_t *serv, uint8_t *pack, int size)
 			return;
 		switch (ntohs(tag->tag_type)) {
 			case TAG_END_OF_LIST:
-				break;
+				goto tags_done;
 			case TAG_SERVICE_NAME:
 				if (tag->tag_len == 0 && conf_accept_blank_service) {
 					service_match = 1;
@@ -1048,6 +1046,7 @@ static void pppoe_recv_PADI(struct pppoe_serv_t *serv, uint8_t *pack, int size)
 				break;
 		}
 	}
+tags_done:
 
 	if (conf_verbose)
 		print_packet(serv->ifname, "recv", pack);
@@ -1159,7 +1158,7 @@ static void pppoe_recv_PADR(struct pppoe_serv_t *serv, uint8_t *pack, int size)
 		}
 		switch (ntohs(tag->tag_type)) {
 			case TAG_END_OF_LIST:
-				break;
+				goto padr_tags_done;
 			case TAG_SERVICE_NAME:
 				service_name_tag = tag;
 				if (tag->tag_len == 0)
@@ -1201,6 +1200,7 @@ static void pppoe_recv_PADR(struct pppoe_serv_t *serv, uint8_t *pack, int size)
 				break;
 		}
 	}
+padr_tags_done:
 
 	if (!ac_cookie_tag) {
 		if (conf_verbose)
