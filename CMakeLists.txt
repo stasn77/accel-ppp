@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10)
 
 if (CMAKE_BINARY_DIR STREQUAL CMAKE_HOME_DIRECTORY)
     message(FATAL_ERROR "Building in source directory is forbidden. Please make separated build directory.")
@@ -55,7 +55,7 @@ IF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 		WORKING_DIRECTORY ${CMAKE_HOME_DIRECTORY}
 		OUTPUT_VARIABLE ACCEL_PPP_VERSION
 	)
-	STRING(STRIP ${ACCEL_PPP_VERSION} ACCEL_PPP_VERSION)
+	STRING(STRIP "${ACCEL_PPP_VERSION}" ACCEL_PPP_VERSION)
 ELSE (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 	SET (ACCEL_PPP_VERSION 1.13.0)
 ENDIF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
@@ -72,33 +72,16 @@ if (NOT BUILD_DRIVER_ONLY)
 		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fstack-protector -fstack-protector-all")
 	endif (MEMDEBUG)
 
-	if (NOT DEFINED CRYPTO)
-		set(CRYPTO OPENSSL)
-	endif (NOT DEFINED CRYPTO)
-
-	if (CRYPTO STREQUAL OPENSSL)
-		find_library(CRYPTO_LIBRARY ssl
-			HINTS ${CMAKE_SOURCE_DIR}/lib/linux/gcc/${BIT}/lib
-			PATHS ${CMAKE_SOURCE_DIR}/lib/linux/gcc/${BIT}/lib
-		)
-		IF(NOT CRYPTO_LIBRARY)
-			message(FATAL_ERROR "${Esc}[31mRequired libcrypto-0.9.8 or probably later (openssl-0.9.8)  not found.\n Install libssl-dev and run cmake again${Esc}[m")
-		ENDIF(NOT CRYPTO_LIBRARY)
-		add_definitions(-DCRYPTO_OPENSSL)
-		set(crypto_lib crypto ssl)
-	elseif (CRYPTO STREQUAL TOMCRYPT)
-		add_definitions(-DCRYPTO_TOMCRYPT)
-		INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/crypto)
-		set(crypto_lib tomcrypt internal-crypto)
-	elseif (CRYPTO STREQUAL INTERNAL)
-		INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/crypto)
-		set(crypto_lib internal-crypto)
-	else (CRYPTO STREQUAL OPENSSL)
-		message(FATAL_ERROR "unknown CRYPTO type")
-	endif (CRYPTO STREQUAL OPENSSL)
+	find_library(CRYPTO_LIBRARY ssl
+		HINTS ${CMAKE_SOURCE_DIR}/lib/linux/gcc/${BIT}/lib
+		PATHS ${CMAKE_SOURCE_DIR}/lib/linux/gcc/${BIT}/lib
+	)
+	IF(NOT CRYPTO_LIBRARY)
+		message(FATAL_ERROR "${Esc}[31mRequired libcrypto-0.9.8 or probably later (openssl-0.9.8)  not found.\n Install libssl-dev and run cmake again${Esc}[m")
+	ENDIF(NOT CRYPTO_LIBRARY)
+	set(crypto_lib crypto ssl)
 
 	add_subdirectory(accel-pppd)
-	add_subdirectory(crypto)
 	add_subdirectory(accel-cmd)
 
 	install(DIRECTORY DESTINATION /var/log/accel-ppp)
