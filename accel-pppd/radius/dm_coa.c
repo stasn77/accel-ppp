@@ -12,7 +12,7 @@
 #include "iputils.h"
 #include "utils.h"
 
-#include "crypto.h"
+#include <openssl/md5.h>
 
 #include "triton.h"
 #include "events.h"
