@@ -147,6 +147,7 @@ static void disconnect_request(struct radius_pd_t *rpd)
 	ap_session_terminate(rpd->ses, TERM_ADMIN_RESET, 0);
 }
 
+#ifdef HAVE_VRF
 int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name)
 {
 	struct framed_route *fr;
@@ -182,6 +183,7 @@ out:
 	}
 	return 1;
 }
+#endif
 
 static void coa_request(struct radius_pd_t *rpd)
 {
