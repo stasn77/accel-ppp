@@ -78,9 +78,9 @@ static struct rad_req_t *__rad_req_alloc(struct radius_pd_t *rpd, int code, cons
 	if (code == CODE_ACCESS_REQUEST && conf_blast_protection) {
 		uint8_t buf[HMAC_MD5_LEN] = {0};
 		req->pack->message_authenticator = 1;
-		req->pack->secret = (uint8_t *)strdup(req->serv->secret);
+		req->pack->secret = (uint8_t *)_strdup(req->serv->secret);
 		if (rad_packet_add_octets(req->pack, NULL, "Message-Authenticator", buf, HMAC_MD5_LEN)) {
-			free(req->pack->secret);
+			_free(req->pack->secret);
 			req->pack->secret = NULL;
 			goto out_err;
                 }
@@ -255,13 +255,15 @@ int rad_req_acct_fill(struct rad_req_t *req)
 	return 0;
 }
 
-void rad_req_free(struct rad_req_t *req)
+struct rad_server_t *rad_req_free(struct rad_req_t *req)
 {
+	struct rad_server_t *s = NULL;
+
 	assert(!req->active);
 	assert(!req->entry.next);
 
 	if (req->serv)
-		rad_server_put(req->serv, req->type);
+		s = rad_server_put(req->serv, req->type);
 
 	if (req->hnd.tpd)
 		triton_md_unregister_handler(&req->hnd, 1);
@@ -278,6 +280,8 @@ void rad_req_free(struct rad_req_t *req)
 		rad_packet_free(req->reply);
 
 	mempool_free(req);
+
+	return s;
 }
 
 static int make_socket(struct rad_req_t *req)

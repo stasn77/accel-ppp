@@ -14,11 +14,9 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
-#include <linux/if.h>
-#ifdef HAVE_GOOD_IFARP
-#include <linux/if_arp.h>
-#endif
-#include <linux/route.h>
+#include <net/if.h>
+#include <net/if_arp.h>
+#include <net/route.h>
 
 #include "events.h"
 #include "list.h"
@@ -1022,9 +1020,9 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 			in_addr_t gw;
 			iproute_get(ses->router, &gw, NULL);
 			if (gw)
-				iproute_add(0, ses->siaddr, ses->yiaddr, gw, conf_proto, 32);
+				iproute_add(0, ses->siaddr, ses->yiaddr, gw, conf_proto, 32, NULL);
 			else
-				iproute_add(0, ses->siaddr, ses->router, gw, conf_proto, 32);
+				iproute_add(0, ses->siaddr, ses->router, gw, conf_proto, 32, NULL);
 		}*/
 
 		if (serv->opt_mode == MODE_L3)
@@ -1068,9 +1066,9 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
 		if (!serv->opt_ip_unnumbered)
-			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0);
+			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, NULL);
 		else
-			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
+			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
 	}
 
 	if (ses->l4_redirect)
@@ -1182,7 +1180,7 @@ static void ipoe_session_started(struct ap_session *s)
 
 	if (ses->ses.ipv4->peer_addr != ses->yiaddr)
 		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
-		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
+		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
 
 	if (ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
@@ -1277,9 +1275,9 @@ static void ipoe_session_finished(struct ap_session *s)
 	} else if (ses->started) {
 		if (!serv->opt_ifcfg) {
 			if (!serv->opt_ip_unnumbered)
-				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0);
+				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, NULL);
 			else
-				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0);
+				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
 		}
 	}
 
