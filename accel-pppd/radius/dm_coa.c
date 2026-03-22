@@ -147,7 +147,6 @@ static void disconnect_request(struct radius_pd_t *rpd)
 	ap_session_terminate(rpd->ses, TERM_ADMIN_RESET, 0);
 }
 
-#ifdef HAVE_VRF
 int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name)
 {
 	struct framed_route *fr;
@@ -174,14 +173,7 @@ int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name)
 	return 0;
 out:
 	for (fr = rpd->fr; fr; fr = fr->next) {
-		char *vrf_name = NULL;
-		uint32_t table_id;
-		int vrf_ifindex = iplink_get_vrf_ifindex(rpd->ses->ifindex);
-		if (vrf_ifindex)
-			iplink_get_vrf_info(vrf_ifindex, &vrf_name, &table_id);
-		else
-			table_id = RT_TABLE_MAIN;
-		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, table_id)) {
+		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, rpd->ses->vrf_name)) {
 			char dst[17], gw[17];
 			u_inet_ntoa(fr->dst, dst);
 			u_inet_ntoa(fr->gw, gw);
@@ -190,7 +182,6 @@ out:
 	}
 	return 1;
 }
-#endif
 
 static void coa_request(struct radius_pd_t *rpd)
 {

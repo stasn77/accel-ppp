@@ -3249,7 +3249,6 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 
 		serv->active = 1;
 		serv->ifindex = ifindex;
-#ifdef HAVE_VRF
 		serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
 		if (serv->vrf_ifindex) {
 			iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
@@ -3258,7 +3257,6 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			serv->table_id = RT_TABLE_MAIN;
 			serv->vrf_name[0] = '\0';
 		}
-#endif /* HAVE_VRF */
 		if ((opt_shared && !serv->opt_shared) || (!opt_shared && serv->opt_shared)) {
 			ipoe_drop_sessions(serv, NULL);
 			serv->opt_shared = opt_shared;
@@ -3408,7 +3406,6 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	serv->parent_ifindex = parent_ifindex;
 	serv->parent_vid = parent_ifindex ? iplink_vlan_get_vid(parent_ifindex, NULL) : 0;
 	serv->vid = vid;
-#ifdef HAVE_VRF
 	serv->vrf_ifindex = iplink_get_vrf_ifindex(ifindex);
 	if (serv->vrf_ifindex) {
 		iplink_get_vrf_info(serv->vrf_ifindex, &vrf_name, &serv->table_id);
@@ -3417,7 +3414,6 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		serv->table_id = RT_TABLE_MAIN;
 		serv->vrf_name[0] = '\0';
 	}
-#endif /* HAVE_VRF */
 	serv->active = 1;
 	INIT_LIST_HEAD(&serv->sessions);
 	INIT_LIST_HEAD(&serv->disc_list);
