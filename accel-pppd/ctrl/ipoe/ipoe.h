@@ -3,8 +3,7 @@
 
 #include <stdint.h>
 #include <pthread.h>
-#include <linux/if.h>
-#include <stdbool.h>
+#include <net/if.h>
 
 #include "config.h"
 #include "triton.h"
