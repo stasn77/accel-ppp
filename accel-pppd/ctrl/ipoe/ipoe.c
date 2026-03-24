@@ -1301,6 +1301,9 @@ static void ipoe_session_finished(struct ap_session *s)
 			ses->hwaddr[5]);
 
 	if (ses->ifindex != -1) {
+		if (s->vrf_name)
+			ap_session_vrf(s, NULL, 0);
+
 		if (s->net != def_net) {
 			struct ap_net *pnet = s->net;
 			if (!net->move_link(def_net, s->ifindex)) {
