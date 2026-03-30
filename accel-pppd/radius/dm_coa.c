@@ -11,6 +11,7 @@
 #include <sys/socket.h>
 #include "iputils.h"
 #include "utils.h"
+#include <stdbool.h>
 
 #include <openssl/md5.h>
 
