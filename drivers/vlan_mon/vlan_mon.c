@@ -756,6 +756,9 @@ static int __init vlan_mon_init(void)
 	}
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+	vlan_pt.af_packet_net = &init_net;
+#endif
 	dev_add_pack(&vlan_pt);
 
 	return 0;

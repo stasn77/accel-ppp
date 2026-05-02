@@ -162,8 +162,17 @@ jobs:
       - name: Run tests (all)
         timeout-minutes: 5
         run: >
-          ssh -i ssh-key -p2222 root@localhost "cd accel-ppp/tests && 
+          ssh -i ssh-key -p2222 root@localhost "cd accel-ppp/tests &&
           python3 -m pytest -Wall --order-dependencies -v -m \"not chap_secrets\""
       - name: Display processes and dmesg after tests
         if: ${{ always() }}
         run: ssh -i ssh-key -p2222 -o ConnectTimeout=5 root@localhost "ps aux | grep accel- && dmesg"
+
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          ssh -i ssh-key -p2222 -o ConnectTimeout=5 root@localhost "dmesg" > /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi
