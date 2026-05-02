@@ -422,7 +422,7 @@ static void free_lpd(struct log_file_pd_t *lpd)
 		if (lpd->lf.fd != -1)
 			close(lpd->lf.fd);
 		if (lpd->lf.new_fd != -1)
-			close(lpd->lf.fd);
+			close(lpd->lf.new_fd);
 		spin_unlock(&lpd->lf.lock);
 		mempool_free(lpd);
 	}

@@ -26,16 +26,16 @@ jobs:
     steps:
       - name: Install build tools (using apt)
         run: >
-          sudo apt update && 
+          sudo apt update &&
           NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true sudo -E apt -y install
           git build-essential cmake gcc linux-headers-`uname -r`
-          libpcre2-dev libssl-dev liblua5.1-0-dev kmod python3-pip 
+          libpcre2-dev libssl-dev liblua5.1-0-dev kmod python3-pip
           iproute2 ppp pppoe isc-dhcp-client
 
       - name: Install testing tools (using pip)
         run: >
-          sudo apt -y install python3-pytest python3-pytest-dependency python3-pytest-order || 
-          sudo pip3 install pytest pytest-dependency pytest-order || 
+          sudo apt -y install python3-pytest python3-pytest-dependency python3-pytest-order ||
+          sudo pip3 install pytest pytest-dependency pytest-order ||
           sudo pip3 install --break-system-packages pytest pytest-dependency pytest-order
 
       - name: Check out repository code
@@ -51,8 +51,8 @@ jobs:
         run: >
           CFLAGS="-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover=all -fno-omit-frame-pointer -O2 -g"
           LDFLAGS="-fsanitize=${{ matrix.sanitizer }}"
-          cmake -DBUILD_IPOE_DRIVER=TRUE -DBUILD_VLAN_MON_DRIVER=TRUE -DCMAKE_INSTALL_PREFIX=/usr 
-          -DKDIR=/usr/src/linux-headers-`uname -r` 
+          cmake -DBUILD_IPOE_DRIVER=TRUE -DBUILD_VLAN_MON_DRIVER=TRUE -DCMAKE_INSTALL_PREFIX=/usr
+          -DKDIR=/usr/src/linux-headers-`uname -r`
           -DLUA=TRUE -DSHAPER=TRUE -DRADIUS=TRUE ..
 
       - name: make && make install
@@ -72,4 +72,13 @@ jobs:
         working-directory: ./tests
         env:
           ${{ matrix.env_name }}: ${{ matrix.env_value }}
-        run: sudo -E python3 -m pytest -Wall --order-dependencies -v 
+        run: sudo -E python3 -m pytest -Wall --order-dependencies -v
+
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          sudo dmesg | tee /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi

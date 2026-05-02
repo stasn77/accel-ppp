@@ -170,13 +170,22 @@ jobs:
       - name: Run tests (all)
         timeout-minutes: 5
         run: >
-          ssh -i ssh-key -p2222 user@localhost "cd accel-ppp/tests && 
+          ssh -i ssh-key -p2222 user@localhost "cd accel-ppp/tests &&
           sudo python3 -m pytest -Wall --order-dependencies -v"
       - name: Display processes and dmesg after tests
         if: ${{ always() }}
         run: >
-          ssh -i ssh-key -p2222 user@localhost "ps aux | grep accel- && 
+          ssh -i ssh-key -p2222 user@localhost "ps aux | grep accel- &&
           sudo dmesg"
+
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          ssh -i ssh-key -p2222 user@localhost "sudo dmesg" > /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi
 
   Test-in-Alpine:
     #if: ${{ false }} # disable for now
@@ -299,13 +308,22 @@ jobs:
       - name: Run tests (all)
         timeout-minutes: 5
         run: >
-          ssh -i ssh-key -p2222 alpine@localhost "cd accel-ppp/tests && 
+          ssh -i ssh-key -p2222 alpine@localhost "cd accel-ppp/tests &&
           doas python3 -m pytest -Wall --order-dependencies -v -m \"not chap_secrets\""
       - name: Display processes and dmesg after tests
         if: ${{ always() }}
         run: >
-          ssh -i ssh-key -p2222 alpine@localhost "ps aux | grep accel- && 
+          ssh -i ssh-key -p2222 alpine@localhost "ps aux | grep accel- &&
           doas dmesg"
+
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          ssh -i ssh-key -p2222 alpine@localhost "doas dmesg" > /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi
 
 
   Test-in-GH:
@@ -363,6 +381,15 @@ jobs:
         working-directory: ./tests
         run: sudo python3 -m pytest -Wall --order-dependencies -v
 
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          sudo dmesg | tee /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi
+
   Test-in-GH-Coverage:
     #if: ${{ false }} # disable for now
     strategy:
@@ -418,6 +445,15 @@ jobs:
         timeout-minutes: 5
         working-directory: ./tests
         run: sudo python3 -m pytest -Wall --order-dependencies -v || exit 0
+
+      - name: Check dmesg for kernel issues
+        if: ${{ always() }}
+        run: |
+          sudo dmesg | tee /tmp/dmesg.log
+          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+            echo "::error::Kernel issues detected in dmesg"
+            exit 1
+          fi
 
       - name: Generate coverage reports (default(txt), csv, html)
         run: |
