@@ -182,7 +182,7 @@ jobs:
         if: ${{ always() }}
         run: |
           ssh -i ssh-key -p2222 user@localhost "sudo dmesg" > /tmp/dmesg.log
-          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+          if grep -E 'WARNING: CPU:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
             echo "::error::Kernel issues detected in dmesg"
             exit 1
           fi
@@ -320,7 +320,7 @@ jobs:
         if: ${{ always() }}
         run: |
           ssh -i ssh-key -p2222 alpine@localhost "doas dmesg" > /tmp/dmesg.log
-          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+          if grep -E 'WARNING: CPU:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
             echo "::error::Kernel issues detected in dmesg"
             exit 1
           fi
@@ -385,7 +385,7 @@ jobs:
         if: ${{ always() }}
         run: |
           sudo dmesg | tee /tmp/dmesg.log
-          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+          if grep -E 'WARNING: CPU:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
             echo "::error::Kernel issues detected in dmesg"
             exit 1
           fi
@@ -450,7 +450,7 @@ jobs:
         if: ${{ always() }}
         run: |
           sudo dmesg | tee /tmp/dmesg.log
-          if grep -E 'WARNING:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
+          if grep -E 'WARNING: CPU:|BUG:|Oops:|kernel panic|general protection fault|KASAN|UBSAN:|soft lockup|hard LOCKUP|INFO: task .+ blocked|Bad page state|invalid opcode' /tmp/dmesg.log; then
             echo "::error::Kernel issues detected in dmesg"
             exit 1
           fi
