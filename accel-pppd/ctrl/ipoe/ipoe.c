@@ -1382,9 +1382,6 @@ static void ipoe_session_finished(struct ap_session *s)
 	if (ses->dhcpv4)
 		dhcpv4_free(ses->dhcpv4);
 
-	if (ses->username)
-		_free(ses->username);
-
 	triton_event_fire(EV_CTRL_FINISHED, s);
 
 	if (s->ifindex == ses->serv->ifindex && strcmp(s->ifname, ses->serv->ifname)) {
