@@ -832,10 +832,8 @@ static void ipoe_session_start(struct ipoe_session *ses)
 
 	ap_session_starting(&ses->ses);
 
-	if (ses->serv->opt_shared && ipoe_create_interface(ses)) {
-		_free(username);
+	if (ses->serv->opt_shared && ipoe_create_interface(ses))
 		return;
-	}
 
 	if (conf_noauth) {
 		r = PWDB_SUCCESS;
@@ -873,8 +871,6 @@ static void ipoe_session_start(struct ipoe_session *ses)
 	}
 
 	auth_result(ses, r);
-
-	_free(username);
 }
 
 static void find_gw_addr(struct ipoe_session *ses)
