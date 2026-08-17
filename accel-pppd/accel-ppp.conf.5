@@ -36,6 +36,7 @@ This is logging target which logs messages over TCP/IP.
 .TP
 .BI log_pgsql
 This is logging target which logs messages to PostgreSQL.
+Deprecated and scheduled for removal, see the [log-pgsql] section.
 .TP
 .BI pptp
 .br
@@ -686,6 +687,12 @@ Specifies primary NBNS to be sent to peer.
 .BI "wins2=" x.x.x.x
 Specifies secondary NBNS to be sent to peer.
 .SH [ipv6-dns]
+These options apply to sessions which were not assigned DNS servers of their
+own. A RADIUS server may assign per session ones by returning up to 3
+DNS-Server-IPv6-Address attributes (RFC 6911) in the Access-Accept; those
+replace, rather than extend, the servers configured here, for that session
+only. Both the ipv6_nd module (RDNSS option of the router advertisements) and
+the ipv6_dhcp module (DNS_SERVERS option) honour them.
 .TP
 .BI "dns=" IPv6_address
 Specifies IPv6 DNS to be sent to peer. You may specify up to 3 dns options.
@@ -724,7 +731,7 @@ If this option is given and greater than zero then pptp module will send echo-re
 seconds.
 .TP
 .BI "echo-failure=" n
-Specifies maximum number of echo-requests may be sent without valid echo-reply, if exceeds connection will be terminated.
+Specifies maximum number of echo-requests may be sent without valid echo-reply, if exceeds connection will be terminated. Zero disables the check: echo-requests are still sent, but missing replies never terminate the connection (default 3).
 .TP
 .BI "timeout=" n
 Timeout waiting reply from client in seconds (default 5).
@@ -1352,6 +1359,10 @@ log all messages including debug messages
 .SH [log-pgsql]
 .br
 Configuration of log_pgsql module.
+.br
+This module is deprecated and scheduled for removal. It is built only when
+accel-ppp is configured with LOG_PGSQL_DEPRECATED=TRUE. If you depend on it,
+please object at https://github.com/accel-ppp/accel-ppp/issues.
 .TP
 .BI "conninfo=" conninfo
 Conninfo to connect to PostgreSQL server.
@@ -1587,7 +1598,9 @@ section. The same numbers shown by
 .B "accel-cmd show stat"
 are returned for every GET on
 .B /metrics
-\&. Any other path responds with 404, and any method other than GET
+\&, optionally followed by per session details in the JSON format, see
+.BR sessions .
+Any other path responds with 404, and any method other than GET
 responds with 405.
 .TP
 .BI "format=" prometheus|json
@@ -1626,6 +1639,28 @@ Maximum number of in-flight HTTP clients. Excess connections are
 accepted then immediately closed. Defaults to 64. Set to
 .B 0
 to disable the cap.
+.TP
+.BI "sessions=" 0|1
+Adds a
+.B session_details
+array to the JSON body holding per session identity, addressing,
+protocol state, interface context, uptime and traffic counters. Has no
+effect with
+.BR format = prometheus ,
+which stays aggregate only. Defaults to
+.BR 0 .
+.br
+Two things to weigh before enabling it. Usernames, calling and called
+station identifiers become readable by every peer
+.B allowed_ips
+permits, which is every peer when that option is unset. And the traffic
+counters are the ones last sampled by accounting rather than a fresh
+read of the interface, so they are only as current as the
+.B radius
+.B interim-interval
+or the session
+.B idle-timeout
+makes them.
 .SH [connlimit]
 .br
 This module limits connection rate from single source.

@@ -48,7 +48,7 @@ monitoring kernel modules. Optional features require their corresponding
 development libraries:
 
 * Net-SNMP for NETSNMP=TRUE
-* PostgreSQL client libraries for LOG_PGSQL=TRUE
+* PostgreSQL client libraries for LOG_PGSQL_DEPRECATED=TRUE
 * Lua for LUA=TRUE or a specific Lua version such as LUA=5.3
 
 
@@ -65,7 +65,6 @@ Use an out-of-tree build directory:
 
 Useful build options:
 
-* BUILD_PPTP_DRIVER=TRUE builds the PPTP kernel module.
 * BUILD_IPOE_DRIVER=TRUE builds the IPoE kernel module.
 * BUILD_VLAN_MON_DRIVER=TRUE builds the VLAN monitoring kernel module.
 * BUILD_PPPOSEQ_DRIVER=TRUE builds the PPPoSEQ kernel module.
@@ -74,7 +73,10 @@ Useful build options:
 * RADIUS=FALSE omits RADIUS support.
 * SHAPER=FALSE omits the traffic-shaping module.
 * NETSNMP=TRUE builds SNMP support.
-* LOG_PGSQL=TRUE builds PostgreSQL logging support.
+* LOG_PGSQL_DEPRECATED=TRUE builds PostgreSQL logging support. The module is
+  deprecated and scheduled for removal, the old LOG_PGSQL flag now fails the
+  build. If you depend on it, please say so at
+  https://github.com/accel-ppp/accel-ppp/issues.
 
 For example, to build the IPoE and VLAN monitoring modules for the running
 kernel:
@@ -238,8 +240,8 @@ digest is stored as hexadecimal.
 Kernel module warning
 =====================
 
-The out-of-tree PPTP module conflicts with the kernel's ip_gre module. Do not
-build ip_gre into the kernel or load it at runtime when using that PPTP module.
+PPTP requires the kernel's PPTP PPPoX support (CONFIG_PPTP, available since
+Linux 2.6.37); ACCEL-PPP no longer ships an out-of-tree replacement.
 Do not mix ACCEL-PPP PPTP connections with poptop's pptpd; stop existing pptpd
 sessions before starting ACCEL-PPP.
 
