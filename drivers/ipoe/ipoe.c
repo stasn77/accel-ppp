@@ -1050,10 +1050,10 @@ static void ipoe_dellink(struct net_device *dev, struct list_head *head)
 	ses->dying = 1;
 
 	if (ses->peer_addr)
-		list_del_rcu(&ses->entry);
+		hlist_del_rcu(&ses->entry);
 	list_del(&ses->entry2);
-	if (ses->u.hwaddr_u)
-		list_del_rcu(&ses->entry3);
+	if (!is_zero_ether_addr(ses->hwaddr))
+		hlist_del_rcu(&ses->entry3);
 
 	up(&ipoe_wlock);
 
@@ -1075,7 +1075,9 @@ static void ipoe_dellink(struct net_device *dev, struct list_head *head)
 		dev_put(ses->link_dev);
 		ses->link_dev = NULL;
 	}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	ida_free(&ses_ida, ses->ida);
+#endif
 	unregister_netdevice_queue(dev, head);
 }
 
@@ -1418,9 +1420,9 @@ static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 		ses->dying = 1;
 
 		if (ses->peer_addr)
-			list_del_rcu(&ses->entry);
-		if (ses->u.hwaddr_u)
-			list_del_rcu(&ses->entry3);
+			hlist_del_rcu(&ses->entry);
+		if (!is_zero_ether_addr(ses->hwaddr))
+			hlist_del_rcu(&ses->entry3);
 	}
 
 	up(&ipoe_wlock);
@@ -1439,6 +1441,9 @@ static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 			dev_put(ses->link_dev);
 			ses->link_dev = NULL;
 		}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+		ida_free(&ses_ida, ses->ida);
+#endif
 	}
 
 	rtnl_lock();
@@ -1984,7 +1989,9 @@ static int __init ipoe_init(void)
 
 	printk("IPoE session driver v%s\n", ACCEL_PPP_VERSION);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ida_init(&ses_ida);
+#endif
 
 	for (i = 0; i <= IPOE_HASH_BITS; i++) {
 		INIT_HLIST_HEAD(&ipoe_list[i]);
