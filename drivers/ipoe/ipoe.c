@@ -768,6 +768,9 @@ static bool is_unnumbered(struct net_device *dev, __be32 addr)
 {
 	struct in_ifaddr *ifa;
 
+	if (!rcu_access_pointer(dev->ip_ptr))
+		return false;
+
 	for(ifa = rcu_dereference(dev->ip_ptr->ifa_list);
 		ifa; ifa = rcu_dereference(ifa->ifa_next))
 		if (ifa->ifa_address == addr && ifa->ifa_prefixlen == 32)
@@ -1206,7 +1209,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	if (peer_addr)
 		hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
 	list_add_tail(&ses->entry2, &ipoe_list2);
-	if (link_dev)
+	if (link_dev && !is_zero_ether_addr(ses->hwaddr))
 		hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	r = dev->ifindex;
 	up(&ipoe_wlock);
@@ -1294,7 +1297,8 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 		ses = ipoe_lookup(peer_addr, link_dev);
 		if (ses) {
 			atomic_dec(&ses->refs);
-			return -EEXIST;
+			ret = -EEXIST;
+			goto out;
 		}
 	}
 
@@ -1326,6 +1330,8 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 		return ret;
 	}
 
+	link_dev = NULL;
+
 	nla_put_u32(msg, IPOE_ATTR_IFINDEX, ret);
 
 	genlmsg_end(msg, hdr);
@@ -1339,6 +1345,8 @@ err_out:
 	nlmsg_free(msg);
 
 out:
+	if (link_dev)
+		dev_put(link_dev);
 	return ret;
 }
 
@@ -1460,7 +1468,7 @@ static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 {
 	int ret = -EINVAL, r = 0;
-	struct net_device *dev, *link_dev, *old_dev;
+	struct net_device *dev, *link_dev = NULL, *old_dev, *lookup_dev;
 	struct in_device *in_dev;
 	struct ipoe_session *ses, *ses1;
 	int ifindex;
@@ -1483,46 +1491,27 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 		goto out_unlock;
 
 	ses = netdev_priv(dev);
+	lookup_dev = ses->link_dev;
 
 	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
-		int ifindex = nla_get_u32(info->attrs[IPOE_ATTR_LINK_IFINDEX]);
-
+		ifindex = nla_get_u32(info->attrs[IPOE_ATTR_LINK_IFINDEX]);
 		if (ifindex) {
 			link_dev = dev_get_by_index(&init_net, ifindex);
-
 			if (!link_dev)
 				goto out_unlock;
-		} else
-			link_dev = NULL;
-
-		old_dev = ses->link_dev;
-		ses->link_dev = link_dev;
-
-		if (old_dev) {
-			dev_put(old_dev);
-			hlist_del_rcu(&ses->entry3);
-			eth_zero_addr(ses->hwaddr);
-			synchronize_rcu();
 		}
-
-		if (link_dev) {
-			ses->dev->features = link_dev->features & ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
-			dev_addr_mod(dev, 0, link_dev->dev_addr, ETH_ALEN);
-#else
-			ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
-#endif
-			ether_addr_copy(dev->broadcast, link_dev->broadcast);
-		}
+		lookup_dev = link_dev;
 	}
 
 	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
 		peer_addr = nla_get_be32(info->attrs[IPOE_ATTR_PEER_ADDR]);
 		if (peer_addr) {
-			ses1 = ipoe_lookup(peer_addr, link_dev);
+			ses1 = ipoe_lookup(peer_addr, lookup_dev);
 			if (ses1) {
 				atomic_dec(&ses1->refs);
 				if (ses1 != ses) {
+					if (link_dev)
+						dev_put(link_dev);
 					ret = -EEXIST;
 					goto out_unlock;
 				}
@@ -1540,6 +1529,29 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			hlist_add_head_rcu(&ses->entry, &ipoe_list[hash_addr(peer_addr)]);
 		else
 			ses->dev->flags &= ~IFF_UP;
+	}
+
+	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
+		old_dev = ses->link_dev;
+		ses->link_dev = link_dev;
+
+		if (old_dev) {
+			dev_put(old_dev);
+			if (!is_zero_ether_addr(ses->hwaddr))
+				hlist_del_rcu(&ses->entry3);
+			eth_zero_addr(ses->hwaddr);
+			synchronize_rcu();
+		}
+
+		if (link_dev) {
+			ses->dev->features = link_dev->features & ~(NETIF_F_HW_VLAN_FILTER | NETIF_F_LRO);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0)
+			dev_addr_mod(dev, 0, link_dev->dev_addr, ETH_ALEN);
+#else
+			ether_addr_copy(dev->dev_addr, link_dev->dev_addr);
+#endif
+			ether_addr_copy(dev->broadcast, link_dev->broadcast);
+		}
 	}
 
 
@@ -1563,8 +1575,12 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 		ses->gw = nla_get_u32(info->attrs[IPOE_ATTR_GW_ADDR]);
 
 	if (info->attrs[IPOE_ATTR_HWADDR]) {
+		if (ses->link_dev && !is_zero_ether_addr(ses->hwaddr)) {
+			hlist_del_rcu(&ses->entry3);
+			synchronize_rcu();
+		}
 		nla_memcpy(ses->hwaddr, info->attrs[IPOE_ATTR_HWADDR], ETH_ALEN);
-		if (ses->link_dev)
+		if (ses->link_dev && !is_zero_ether_addr(ses->hwaddr))
 			hlist_add_head_rcu(&ses->entry3, &ipoe_list3[eth_hash(ses->hwaddr)]);
 	}
 
