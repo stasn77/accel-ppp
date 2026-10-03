@@ -2758,8 +2758,10 @@ static void ipoe_serv_release(struct ipoe_serv *serv)
 	if (serv->dhcpv4_relay)
 		dhcpv4_relay_free(serv->dhcpv4_relay, &serv->ctx);
 
-	if (serv->arp)
+	if (serv->arp) {
 		arpd_stop(serv->arp);
+		serv->arp = NULL;
+	}
 
 	if (serv->opt_ipv6)
 		ipoe_ipv6_disable(serv);
@@ -3282,6 +3284,10 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			continue;
 
 		serv->active = 1;
+		if (serv->arp && serv->ifindex != ifindex) {
+			arpd_stop(serv->arp);
+			serv->arp = NULL;
+		}
 		serv->ifindex = ifindex;
 		if ((opt_shared && !serv->opt_shared) || (!opt_shared && serv->opt_shared)) {
 			ipoe_drop_sessions(serv, NULL);

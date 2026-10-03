@@ -29,6 +29,7 @@
 struct arp_node {
 	struct rb_node node;
 	struct ipoe_serv *ipoe;
+	int ifindex;
 };
 
 struct arp_tree {
@@ -202,7 +203,7 @@ static int arp_read(struct triton_md_handler_t *h)
 		while (*p) {
 			parent = *p;
 			n = rb_entry(parent, typeof(*n), node);
-			i = n->ipoe->ifindex;
+			i = n->ifindex;
 
 			if (src.sll_ifindex < i)
 				p = &(*p)->rb_left;
@@ -248,7 +249,7 @@ void *arpd_start(struct ipoe_serv *ipoe)
 	while (*p) {
 		parent = *p;
 		n = rb_entry(parent, typeof(*n), node);
-		i = n->ipoe->ifindex;
+		i = n->ifindex;
 
 		if (ifindex < i)
 			p = &(*p)->rb_left;
@@ -269,6 +270,7 @@ void *arpd_start(struct ipoe_serv *ipoe)
 	}
 
 	n->ipoe = ipoe;
+	n->ifindex = ifindex;
 
 	rb_link_node(&n->node, parent, p);
 	rb_insert_color(&n->node, &t->root);
@@ -281,10 +283,18 @@ void *arpd_start(struct ipoe_serv *ipoe)
 void arpd_stop(void *arg)
 {
 	struct arp_node *n = arg;
-	struct arp_tree *t = &arp_tree[n->ipoe->ifindex & HASH_BITS];
+	struct arp_tree *t;
+
+	if (!n)
+		return;
+
+	t = &arp_tree[n->ifindex & HASH_BITS];
 
 	pthread_mutex_lock(&t->lock);
-	rb_erase(&n->node, &t->root);
+	if (!RB_EMPTY_NODE(&n->node)) {
+		rb_erase(&n->node, &t->root);
+		RB_CLEAR_NODE(&n->node);
+	}
 	pthread_mutex_unlock(&t->lock);
 
 	mempool_free(n);
