@@ -155,6 +155,7 @@ struct iphdr;
 struct ethhdr;
 
 void ipoe_recv_up(int ifindex, struct ethhdr *eth, struct iphdr *iph, struct _arphdr *arph);
+void ipoe_session_mac_changed(struct ipoe_session *ses);
 
 struct ipoe_session *ipoe_session_alloc(const char *ifname);
 

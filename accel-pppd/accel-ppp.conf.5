@@ -594,6 +594,11 @@ Turns on soft terminate mode. Soft terminate means that session won't be termina
 .TP
 .BI "check-mac-change=" 0|1
 If enabled accel-ppp will terminate session when detects change of mac address of client (by default it is enabled).
+Applies to DHCP (option 82 / Discover) and to
+.B start=up
+sessions authenticated by IP: kernel notifies on MAC mismatch, session is dropped, next packet/ARP creates a new session. With
+.B mode=L3
+and a resolved gateway the kernel rewrites the MAC instead (no terminate).
 .TP
 .BI "calling-sid=" mac|ip
 Specifies value of Calling-Station-Id attribute.

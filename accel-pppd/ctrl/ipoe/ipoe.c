@@ -1914,6 +1914,13 @@ static void mac_change_detected(struct dhcpv4_packet *pack)
 	ap_session_terminate(&ses->ses, TERM_NAS_REQUEST, 1);
 }
 
+/* start=up / ARP: no DHCP packet, same terminate path as mac_change_detected */
+void ipoe_session_mac_changed(struct ipoe_session *ses)
+{
+	log_ppp_warn("mac change detected\n");
+	ap_session_terminate(&ses->ses, TERM_NAS_REQUEST, 1);
+}
+
 static int check_notify(struct ipoe_serv *serv, struct dhcpv4_packet *pack)
 {
 	struct dhcpv4_option *opt = dhcpv4_packet_find_opt(pack, 43);
@@ -2412,6 +2419,7 @@ void ipoe_recv_up(int ifindex, struct ethhdr *eth, struct iphdr *iph, struct _ar
 	struct ipoe_serv *serv;
 	struct ipoe_session *ses;
 	in_addr_t saddr = arph ? arph->ar_spa : iph->saddr;
+	const uint8_t *hwaddr = arph ? arph->ar_sha : (eth ? eth->h_source : NULL);
 
 	pthread_mutex_lock(&serv_lock);
 	list_for_each_entry(serv, &serv_list, entry) {
@@ -2426,16 +2434,33 @@ void ipoe_recv_up(int ifindex, struct ethhdr *eth, struct iphdr *iph, struct _ar
 		pthread_mutex_lock(&serv->lock);
 
 		list_for_each_entry(ses, &serv->sessions, entry) {
-			if (ses->yiaddr == saddr) {
-				if (ses->wait_start) {
-					ses->wait_start = 0;
-					triton_context_call(&ses->ctx, (triton_event_func)__ipoe_session_activate, ses);
-				}
+			if (ses->yiaddr != saddr)
+				continue;
 
+			/*
+			 * Same IP, different MAC (kernel notified us). With
+			 * check-mac-change terminate; next packet creates a
+			 * new session. Without it ??? keep old session (idle).
+			 */
+			if (serv->opt_check_mac_change && hwaddr &&
+			    memcmp(ses->hwaddr, hwaddr, ETH_ALEN)) {
+				if (ses->ses.state == AP_STATE_ACTIVE ||
+				    ses->ses.state == AP_STATE_STARTING)
+					triton_context_call(&ses->ctx,
+						(triton_event_func)ipoe_session_mac_changed, ses);
 				pthread_mutex_unlock(&serv->lock);
 				pthread_mutex_unlock(&serv_lock);
 				return;
 			}
+
+			if (ses->wait_start) {
+				ses->wait_start = 0;
+				triton_context_call(&ses->ctx, (triton_event_func)__ipoe_session_activate, ses);
+			}
+
+			pthread_mutex_unlock(&serv->lock);
+			pthread_mutex_unlock(&serv_lock);
+			return;
 		}
 
 		ipoe_session_create_up(serv, eth, iph, arph);

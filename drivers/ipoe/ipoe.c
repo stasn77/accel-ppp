@@ -883,8 +883,19 @@ found:
 
 	if (ses->gw)
 		ether_addr_copy(ses->hwaddr, eth->h_source);
-	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr))
-		goto drop;
+	else if (!ether_addr_equal_64bits(eth->h_source, ses->hwaddr)) {
+		/*
+		 * Same peer IP, different MAC. Keep dropping until userspace
+		 * checks check-mac-change and terminates (or idle-timeout).
+		 * Rate-limited netlink notify ??? otherwise accel never learns.
+		 */
+		atomic_dec(&ses->refs);
+		stats->rx_dropped++;
+		if (skb->protocol == htons(ETH_P_IP) && ipoe_queue_u(skb, saddr) == 0)
+			return RX_HANDLER_CONSUMED;
+		kfree_skb(skb);
+		return RX_HANDLER_CONSUMED;
+	}
 
 	if (skb->protocol == htons(ETH_P_IP) && ses->addr > 1 && check_nat_required(skb, ses->link_dev) && ipoe_do_nat(skb, ses->addr, 0))
 		goto drop;
