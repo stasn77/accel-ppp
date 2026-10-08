@@ -2437,25 +2437,25 @@ void ipoe_recv_up(int ifindex, struct ethhdr *eth, struct iphdr *iph, struct _ar
 			if (ses->yiaddr != saddr)
 				continue;
 
-			/*
-			 * Same IP, different MAC (kernel notified us). With
-			 * check-mac-change terminate; next packet creates a
-			 * new session. Without it ??? keep old session (idle).
-			 */
-			if (serv->opt_check_mac_change && hwaddr &&
-			    memcmp(ses->hwaddr, hwaddr, ETH_ALEN)) {
-				if (ses->ses.state == AP_STATE_ACTIVE ||
-				    ses->ses.state == AP_STATE_STARTING)
-					triton_context_call(&ses->ctx,
-						(triton_event_func)ipoe_session_mac_changed, ses);
+			/* Must run before mac-change: shared+ARP sets wait_start
+			 * and only this path activates the session. */
+			if (ses->wait_start) {
+				ses->wait_start = 0;
+				triton_context_call(&ses->ctx, (triton_event_func)__ipoe_session_activate, ses);
 				pthread_mutex_unlock(&serv->lock);
 				pthread_mutex_unlock(&serv_lock);
 				return;
 			}
 
-			if (ses->wait_start) {
-				ses->wait_start = 0;
-				triton_context_call(&ses->ctx, (triton_event_func)__ipoe_session_activate, ses);
+			/* Only for established sessions - never while STARTING. */
+			if (serv->opt_check_mac_change && hwaddr &&
+			    ses->ses.state == AP_STATE_ACTIVE &&
+			    memcmp(ses->hwaddr, hwaddr, ETH_ALEN)) {
+				triton_context_call(&ses->ctx,
+						    (triton_event_func)ipoe_session_mac_changed, ses);
+				pthread_mutex_unlock(&serv->lock);
+				pthread_mutex_unlock(&serv_lock);
+				return;
 			}
 
 			pthread_mutex_unlock(&serv->lock);

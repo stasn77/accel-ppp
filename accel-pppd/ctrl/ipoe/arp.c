@@ -93,10 +93,10 @@ static void arp_ctx_read(struct _arphdr *ah)
 			break;
 	}
 
-	/* start=up: ARP from new MAC with same IP; same as check-mac-change on DHCP */
+	/* start=up: MAC change only on ACTIVE (not STARTING/wait_start) */
 	if (ses1 && ipoe->opt_check_mac_change &&
-	    memcmp(ses1->hwaddr, ah->ar_sha, ETH_ALEN) &&
-	    (ses1->ses.state == AP_STATE_ACTIVE || ses1->ses.state == AP_STATE_STARTING)) {
+	    ses1->ses.state == AP_STATE_ACTIVE &&
+	    memcmp(ses1->hwaddr, ah->ar_sha, ETH_ALEN)) {
 		triton_context_call(&ses1->ctx,
 				    (triton_event_func)ipoe_session_mac_changed, ses1);
 		pthread_mutex_unlock(&ipoe->lock);
