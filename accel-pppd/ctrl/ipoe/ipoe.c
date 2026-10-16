@@ -1143,15 +1143,16 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
 		if (!serv->opt_ip_unnumbered)
-			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, NULL);
+			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, ses->ses.vrf_name);
 		else
-			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
+			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, ses->ses.vrf_name);
 	}
 
 	if (ses->l4_redirect)
 		ipoe_change_l4_redirect(ses, 0);
 
-	if (ses->ses.net != def_net && !serv->opt_shared && serv->dhcpv4 && !ses->dhcpv4) {
+	if (!serv->opt_shared && serv->dhcpv4 && !ses->dhcpv4 &&
+	    (ses->ses.net != def_net || ses->ses.vrf_name)) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
 		if (ses->dhcpv4) {
 			ses->dhcpv4->recv = ipoe_ses_recv_dhcpv4;
@@ -1262,7 +1263,7 @@ static void ipoe_session_started(struct ap_session *s)
 
 	if (ses->ses.ipv4->peer_addr != ses->yiaddr)
 		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
-		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
+		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32, 0, s->vrf_name);
 
 	if (ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
@@ -1272,6 +1273,23 @@ static void ipoe_session_started(struct ap_session *s)
 		}
 		ses->dhcpv4->recv = ipoe_ses_recv_dhcpv4;
 	}
+}
+
+static void ipoe_ses_vrf(struct ap_session *s)
+{
+	struct ipoe_session *ses;
+
+	if (!s->ctrl || s->ctrl->type != CTRL_TYPE_IPOE)
+		return;
+
+	ses = container_of(s, typeof(*ses), ses);
+	if (!ses->dhcpv4)
+		return;
+
+	dhcpv4_free(ses->dhcpv4);
+	ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
+	if (ses->dhcpv4)
+		ses->dhcpv4->recv = ipoe_ses_recv_dhcpv4;
 }
 
 static void ipoe_session_free(struct ipoe_session *ses)
@@ -1367,9 +1385,9 @@ static void ipoe_session_finished(struct ap_session *s)
 	} else if (ses->started) {
 		if (!serv->opt_ifcfg) {
 			if (!serv->opt_ip_unnumbered)
-				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, NULL);
+				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, s->vrf_name);
 			else
-				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, NULL);
+				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, s->vrf_name);
 		}
 	}
 
@@ -2880,10 +2898,10 @@ static int show_stat_exec(const char *cmd, char * const *fields, int fields_cnt,
 
 	ipoe_stat_get(&stat);
 
-	cli_send(client, "ipoe:\r\n");
-	cli_sendv(client,"  starting: %u\r\n", stat.starting);
-	cli_sendv(client,"  active: %u\r\n", stat.active);
-	cli_sendv(client,"  delayed: %u\r\n", stat.delayed_offer);
+	cli_send(client, "ipoe:\n");
+	cli_sendv(client,"  starting: %u\n", stat.starting);
+	cli_sendv(client,"  active: %u\n", stat.active);
+	cli_sendv(client,"  delayed: %u\n", stat.delayed_offer);
 
 	return CLI_CMD_OK;
 }
@@ -3581,7 +3599,7 @@ static void load_interface_re(const char *opt)
 	if (!re) {
 		PCRE2_UCHAR err_msg[64];
 		pcre2_get_error_message(pcre_err, err_msg, sizeof(err_msg));
-		log_error("ipoe: '%s': %s at %i\r\n", pattern, err_msg, (int)pcre_offset);
+		log_error("ipoe: '%s': %s at %i\n", pattern, err_msg, (int)pcre_offset);
 		return;
 	}
 
@@ -3919,7 +3937,7 @@ static void load_vlan_mon_re(const char *opt, long *mask, int len)
 	if (!re) {
 		PCRE2_UCHAR err_msg[64];
 		pcre2_get_error_message(pcre_err, err_msg, sizeof(err_msg));
-		log_error("ipoe: '%s': %s at %i\r\n", pattern, err_msg, (int)pcre_offset);
+		log_error("ipoe: '%s': %s at %i\n", pattern, err_msg, (int)pcre_offset);
 		return;
 	}
 
@@ -4374,6 +4392,7 @@ static void ipoe_init(void)
 	cli_show_ses_register("ipoe-type", "IPoE session type", print_session_type);
 
 	triton_event_register_handler(EV_CONFIG_RELOAD, (triton_event_func)load_config);
+	triton_event_register_handler(EV_SES_VRF, (triton_event_func)ipoe_ses_vrf);
 
 #ifdef RADIUS
 	if (triton_module_loaded("radius")) {

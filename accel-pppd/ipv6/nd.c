@@ -452,6 +452,15 @@ static void ev_ses_finishing(struct ap_session *ses)
 	_free(h);
 }
 
+static void ev_ses_vrf(struct ap_session *ses)
+{
+	if (!find_pd(ses))
+		return;
+
+	ev_ses_finishing(ses);
+	ev_ses_started(ses);
+}
+
 static void add_dnssl(const char *val)
 {
 	int n;
@@ -628,6 +637,7 @@ static void init(void)
 	triton_event_register_handler(EV_CONFIG_RELOAD, (triton_event_func)load_config);
 	triton_event_register_handler(EV_SES_STARTED, (triton_event_func)ev_ses_started);
 	triton_event_register_handler(EV_SES_FINISHING, (triton_event_func)ev_ses_finishing);
+	triton_event_register_handler(EV_SES_VRF, (triton_event_func)ev_ses_vrf);
 }
 
 DEFINE_INIT(5, init);

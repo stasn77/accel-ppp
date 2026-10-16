@@ -149,51 +149,78 @@ static void disconnect_request(struct radius_pd_t *rpd)
 }
 
 #ifdef HAVE_VRF
-static int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name, int len)
+static void rad_sync_framed_routes(struct radius_pd_t *rpd, int add)
 {
 	struct framed_route *fr;
 	struct framed_ip6_route *fr6;
 
-	net = rpd->ses->net;
-
-	if (len == 1 && *vrf_name == '0') {
-		// Delete interface from VRF
-		if (!ap_session_vrf(rpd->ses, NULL, 0))
-			goto out;
-	} else {
-		// Add interface to VRF
-		if (!ap_session_vrf(rpd->ses, vrf_name, len)) {
-			if (rpd->ses->vrf_name)
-				_free(rpd->ses->vrf_name);
-			rpd->ses->vrf_name = _malloc(len + 1);
-			memcpy(rpd->ses->vrf_name, vrf_name, len);
-			rpd->ses->vrf_name[len] = 0;
-			goto out;
-		}
-	}
-
-	return 0;
-out:
 	for (fr6 = rpd->fr6; fr6; fr6 = fr6->next) {
 		bool gw_spec = !IN6_IS_ADDR_UNSPECIFIED(&fr6->gw);
-		char nbuf[INET6_ADDRSTRLEN];
-		char gwbuf[INET6_ADDRSTRLEN];
-		if (ip6route_add(gw_spec ? 0 : rpd->ses->ifindex, &fr6->prefix, fr6->plen, gw_spec ? &fr6->gw : NULL, 3, fr6->prio, rpd->ses->vrf_name)) {
-			log_ppp_warn("radius: failed to add route %s/%hhu %s %u\n",
-				     u_ip6str(&fr6->prefix, nbuf), fr6->plen,
-				     u_ip6str(&fr6->gw, gwbuf), fr6->prio);
-		}
+		if (add) {
+			char nbuf[INET6_ADDRSTRLEN];
+			char gwbuf[INET6_ADDRSTRLEN];
+			if (ip6route_add(gw_spec ? 0 : rpd->ses->ifindex, &fr6->prefix, fr6->plen,
+					 gw_spec ? &fr6->gw : NULL, 3, fr6->prio, rpd->ses->vrf_name)) {
+				log_ppp_warn("radius: failed to add route %s/%hhu %s %u\n",
+					     u_ip6str(&fr6->prefix, nbuf), fr6->plen,
+					     u_ip6str(&fr6->gw, gwbuf), fr6->prio);
+			}
+		} else
+			ip6route_del(gw_spec ? 0 : rpd->ses->ifindex, &fr6->prefix, fr6->plen,
+				     gw_spec ? &fr6->gw : NULL, 3, fr6->prio, rpd->ses->vrf_name);
 	}
 
 	for (fr = rpd->fr; fr; fr = fr->next) {
-		if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, rpd->ses->vrf_name)) {
-			char dst[17], gw[17];
-			u_inet_ntoa(fr->dst, dst);
-			u_inet_ntoa(fr->gw, gw);
-			log_ppp_warn("radius: failed to add route %s/%i %s %u\n", dst, fr->mask, gw, fr->prio);
-		}
+		if (add) {
+			if (iproute_add(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, rpd->ses->vrf_name)) {
+				char dst[17], gw[17];
+				u_inet_ntoa(fr->dst, dst);
+				u_inet_ntoa(fr->gw, gw);
+				log_ppp_warn("radius: failed to add route %s/%i %s %u\n", dst, fr->mask, gw, fr->prio);
+			}
+		} else
+			iproute_del(fr->gw ? 0 : rpd->ses->ifindex, 0, fr->dst, fr->gw, 3, fr->mask, fr->prio, rpd->ses->vrf_name);
 	}
+}
+
+static int rad_update_vrf(struct radius_pd_t *rpd, const char *vrf_name, int len)
+{
+	char *name = NULL;
+
+	net = rpd->ses->net;
+
+	if (!(len == 1 && *vrf_name == '0')) {
+		name = _malloc(len + 1);
+		if (!name)
+			return 0;
+		memcpy(name, vrf_name, len);
+		name[len] = 0;
+	}
+
+	rad_sync_framed_routes(rpd, 0);
+
+	if (len == 1 && *vrf_name == '0') {
+		if (ap_session_vrf(rpd->ses, NULL, 0))
+			goto fail;
+	} else {
+		if (ap_session_vrf(rpd->ses, vrf_name, len))
+			goto fail;
+		if (rpd->ses->vrf_name)
+			_free(rpd->ses->vrf_name);
+		rpd->ses->vrf_name = name;
+		name = NULL;
+	}
+
+	rad_sync_framed_routes(rpd, 1);
+	triton_event_fire(EV_SES_VRF, rpd->ses);
+	if (name)
+		_free(name);
 	return 1;
+fail:
+	rad_sync_framed_routes(rpd, 1);
+	if (name)
+		_free(name);
+	return 0;
 }
 #endif
 

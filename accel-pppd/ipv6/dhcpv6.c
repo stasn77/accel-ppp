@@ -63,29 +63,20 @@ static void *pd_key;
 
 static int dhcpv6_read(struct triton_md_handler_t *h);
 
-static void ev_ses_started(struct ap_session *ses)
+static int dhcpv6_sock_open(struct ap_session *ses)
 {
 	struct ipv6_mreq mreq;
-	struct dhcpv6_pd *pd;
 	struct sockaddr_in6 addr;
-	struct ipv6db_addr_t *a;
 	int sock;
 	int f = 1;
-
-	if (!ses->ipv6 || list_empty(&ses->ipv6->addr_list))
-		return;
-
-	a = list_entry(ses->ipv6->addr_list.next, typeof(*a), entry);
-	if (a->prefix_len == 0 || IN6_IS_ADDR_UNSPECIFIED(&a->addr))
-		return;
 
 	net->enter_ns();
 	sock = net->socket(AF_INET6, SOCK_DGRAM, 0);
 	net->exit_ns();
 
-	if (!sock) {
+	if (sock < 0) {
 		log_ppp_error("dhcpv6: socket: %s\n", strerror(errno));
-		return;
+		return -1;
 	}
 
 	net->setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &f, sizeof(f));
@@ -93,7 +84,7 @@ static void ev_ses_started(struct ap_session *ses)
 	if (net->setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, ses->ifname, strlen(ses->ifname)) < 0) {
 		log_ppp_error("dhcpv6: setsockopt(SO_BINDTODEVICE): %s\n", strerror(errno));
 		close(sock);
-		return;
+		return -1;
 	}
 
 #ifdef HAVE_VRF
@@ -112,7 +103,7 @@ static void ev_ses_started(struct ap_session *ses)
 	if (net->bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		log_ppp_error("dhcpv6: bind: %s\n", strerror(errno));
 		close(sock);
-		return;
+		return -1;
 	}
 
 	memset(&mreq, 0, sizeof(mreq));
@@ -123,11 +114,31 @@ static void ev_ses_started(struct ap_session *ses)
 	if (net->setsockopt(sock, SOL_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
 		log_ppp_error("dhcpv6: failed to join to All_DHCP_Relay_Agents_and_Servers\n");
 		close(sock);
-		return;
+		return -1;
 	}
 
 	fcntl(sock, F_SETFD, fcntl(sock, F_GETFD) | FD_CLOEXEC);
 	net->set_nonblocking(sock, 1);
+
+	return sock;
+}
+
+static void ev_ses_started(struct ap_session *ses)
+{
+	struct dhcpv6_pd *pd;
+	struct ipv6db_addr_t *a;
+	int sock;
+
+	if (!ses->ipv6 || list_empty(&ses->ipv6->addr_list))
+		return;
+
+	a = list_entry(ses->ipv6->addr_list.next, typeof(*a), entry);
+	if (a->prefix_len == 0 || IN6_IS_ADDR_UNSPECIFIED(&a->addr))
+		return;
+
+	sock = dhcpv6_sock_open(ses);
+	if (sock < 0)
+		return;
 
 	pd = _malloc(sizeof(*pd));
 	memset(pd, 0, sizeof(*pd));
@@ -153,6 +164,24 @@ static struct dhcpv6_pd *find_pd(struct ap_session *ses)
 	}
 
 	return NULL;
+}
+
+static void ev_ses_vrf(struct ap_session *ses)
+{
+	struct dhcpv6_pd *pd = find_pd(ses);
+	int sock;
+
+	if (!pd)
+		return;
+
+	sock = dhcpv6_sock_open(ses);
+	if (sock < 0)
+		return;
+
+	triton_md_unregister_handler(&pd->hnd, 1);
+	pd->hnd.fd = sock;
+	triton_md_register_handler(ses->ctrl->ctx, &pd->hnd);
+	triton_md_enable_handler(&pd->hnd, MD_MODE_READ);
 }
 
 static void ev_ses_finished(struct ap_session *ses)
@@ -1157,6 +1186,7 @@ static void init(void)
 	triton_event_register_handler(EV_CONFIG_RELOAD, (triton_event_func)load_config);
 	triton_event_register_handler(EV_SES_STARTED, (triton_event_func)ev_ses_started);
 	triton_event_register_handler(EV_SES_FINISHED, (triton_event_func)ev_ses_finished);
+	triton_event_register_handler(EV_SES_VRF, (triton_event_func)ev_ses_vrf);
 }
 
 DEFINE_INIT(10, init);

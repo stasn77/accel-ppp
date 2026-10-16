@@ -1,5 +1,6 @@
 /* Exercise the shared interface lookup and length-delimited VRF API. */
 #include <assert.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include "triton.h"
 #undef DEFINE_INIT
@@ -16,6 +17,12 @@ static int lookups, changes, last_master;
 static char last_name[IFNAMSIZ];
 void log_ppp_error(const char *fmt, ...) {}
 void log_ppp_info2(const char *fmt, ...) {}
+void log_ppp_warn(const char *fmt, ...) {}
+void triton_event_fire(int ev, void *arg) {}
+int iproute_add(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw, int proto, int mask, uint32_t prio, const char *vrf_name) { return 0; }
+int iproute_del(int ifindex, in_addr_t src, in_addr_t dst, in_addr_t gw, int proto, int mask, uint32_t prio, const char *vrf_name) { return 0; }
+int ip6route_add(int ifindex, const struct in6_addr *dst, int pref_len, const struct in6_addr *gw, int proto, uint32_t prio, const char *vrf_name) { return 0; }
+int ip6route_del(int ifindex, const struct in6_addr *dst, int pref_len, const struct in6_addr *gw, int proto, uint32_t prio, const char *vrf_name) { return 0; }
 
 static int lookup(const char *name)
 {
