@@ -221,17 +221,13 @@ static inline u32 hash_addr(__be32 addr)
     return hash_32(val, IPOE_HASH_SHIFT);
 }
 
-/* Hash Ethernet address */
+/* Hash Ethernet address without reading past ETH_ALEN. */
 static inline u32 eth_hash(const __u8 *addr)
 {
-	u64 value = get_unaligned((u64 *)addr);
+	u64 value = ((u64)addr[0] << 40) | ((u64)addr[1] << 32) |
+		    ((u64)addr[2] << 24) | ((u64)addr[3] << 16) |
+		    ((u64)addr[4] << 8)  | (u64)addr[5];
 
-	/* only want 6 bytes */
-#ifdef __BIG_ENDIAN
-	value >>= 16;
-#else
-	value <<= 16;
-#endif
 	return hash_64(value, IPOE_HASH_SHIFT);
 }
 
