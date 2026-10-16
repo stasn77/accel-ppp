@@ -1299,7 +1299,7 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 		ifindex = nla_get_u32(info->attrs[IPOE_ATTR_IFINDEX]);
 
 	if (ifindex) {
-		link_dev = dev_get_by_index(&init_net, ifindex);
+		link_dev = dev_get_by_index(genl_info_net(info), ifindex);
 		if (!link_dev)
 			return -EINVAL;
 	}
@@ -1377,7 +1377,7 @@ static int ipoe_nl_cmd_delete(struct sk_buff *skb, struct genl_info *info)
 	down(&ipoe_wlock);
 
 	rcu_read_lock();
-	dev = dev_get_by_index_rcu(&init_net, ifindex);
+	dev = dev_get_by_index_rcu(genl_info_net(info), ifindex);
 	if (!dev || dev->header_ops != &ipoe_hard_header_ops)
 		r = 1;
 	rcu_read_unlock();
@@ -1493,7 +1493,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 	ifindex = nla_get_u32(info->attrs[IPOE_ATTR_IFINDEX]);
 
 	rcu_read_lock();
-	dev = dev_get_by_index_rcu(&init_net, ifindex);
+	dev = dev_get_by_index_rcu(genl_info_net(info), ifindex);
 	if (!dev || dev->header_ops != &ipoe_hard_header_ops)
 		r = 1;
 	rcu_read_unlock();
@@ -1507,7 +1507,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
 		ifindex = nla_get_u32(info->attrs[IPOE_ATTR_LINK_IFINDEX]);
 		if (ifindex) {
-			link_dev = dev_get_by_index(&init_net, ifindex);
+			link_dev = dev_get_by_index(genl_info_net(info), ifindex);
 			if (!link_dev)
 				goto out_unlock;
 		}

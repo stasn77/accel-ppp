@@ -978,7 +978,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 			if (ses->serv->opt_mode == MODE_L2)
 				ses->siaddr = ses->router;
 			else {
-				ses->siaddr = iproute_get(ses->dhcpv4_request->hdr->giaddr, NULL);
+				ses->siaddr = iproute_get(ses->dhcpv4_request->hdr->giaddr, NULL, NULL);
 				if (!ses->router)
 					ses->router = ses->dhcpv4_request->hdr->giaddr;
 			}
@@ -1021,7 +1021,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 			ses->router = ses->serv->opt_src;
 
 		if (!ses->router)
-			ses->router = iproute_get(ses->yiaddr, NULL);
+			ses->router = iproute_get(ses->yiaddr, NULL, NULL);
 
 		if (!ses->router) {
 			log_ppp_error("can't determine router address\n");
@@ -1103,10 +1103,8 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 		}*/
 
 		if (serv->opt_mode == MODE_L3)
-			iproute_get(ses->yiaddr, &gw);
-		//	iproute_get(ses->giaddr, &gw);
+			iproute_get(ses->yiaddr, &gw, NULL);
 
-		//if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, gw ? 0 : ses->serv->ifindex, gw ? NULL : ses->hwaddr)) {
 		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
 			ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
 			return;
@@ -1140,6 +1138,25 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	ses->started = 1;
 
 	ap_session_activate(&ses->ses);
+
+	/*
+	 * Exclusive L3: the parent (session iface) is now in the VRF, so
+	 * the access route to yiaddr lives in that table. Refresh gw and
+	 * keep the already-programmed link_dev. Skip other netns: genl
+	 * still talks to init_net, and ifindex there would be wrong.
+	 */
+	if (ses->ifindex != -1 && serv->opt_mode == MODE_L3 && !serv->opt_shared &&
+	    ses->ses.vrf_name && ses->ses.net == def_net) {
+		addr = 0;
+		gw = 0;
+		if (ses->ses.ipv4 && ses->ses.ipv4->peer_addr != ses->yiaddr)
+			addr = ses->ses.ipv4->peer_addr;
+		iproute_get(ses->yiaddr, &gw, ses->ses.vrf_name);
+		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
+			ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
+			return;
+		}
+	}
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
 		if (!serv->opt_ip_unnumbered)

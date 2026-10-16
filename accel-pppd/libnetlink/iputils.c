@@ -853,7 +853,7 @@ int __export ip6addr_del(int ifindex, struct in6_addr *addr, int prefix_len)
 	return r;
 }
 
-in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
+in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw, const char *vrf_name)
 {
 	struct ipaddr_req {
 		struct nlmsghdr n;
@@ -865,6 +865,9 @@ in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
 	int len;
 	in_addr_t res = 0;
 	struct rtnl_handle *rth = net->rtnl_get();
+#ifdef HAVE_VRF
+	uint32_t rt_table = RT_TABLE_MAIN;
+#endif
 
 	if (gw)
 		*gw = 0;
@@ -885,6 +888,18 @@ in_addr_t __export iproute_get(in_addr_t dst, in_addr_t *gw)
 	req.r.rtm_tos = 0;
 	req.r.rtm_src_len = 0;
 	req.r.rtm_dst_len = 32;
+
+#ifdef HAVE_VRF
+	if (vrf_name) {
+		if (ipvrf_get_table(&rt_table, vrf_name) < 0)
+			goto out;
+		req.r.rtm_table = rt_table;
+		if (rt_table != RT_TABLE_MAIN)
+			addattr32(&req.n, 4096, RTA_TABLE, rt_table);
+	}
+#else
+	(void)vrf_name;
+#endif
 
 	addattr32(&req.n, 4096, RTA_DST, dst);
 
