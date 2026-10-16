@@ -36,6 +36,9 @@ struct ipoe_serv {
 	struct triton_context_t ctx;
 	char ifname[IFNAMSIZ];
 	int ifindex;
+#ifdef HAVE_VRF
+	char vrf_name[IFNAMSIZ];
+#endif
 	uint8_t hwaddr[ETH_ALEN];
 	struct list_head sessions;
 	unsigned int sess_cnt;

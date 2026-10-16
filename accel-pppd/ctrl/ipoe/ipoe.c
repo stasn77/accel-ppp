@@ -279,6 +279,30 @@ static void ipoe_ctx_switch(struct triton_context_t *ctx, void *arg)
 	log_switch(ctx, arg);
 }
 
+#ifdef HAVE_VRF
+static const char *ipoe_parent_vrf(struct ipoe_serv *serv)
+{
+	return serv->vrf_name[0] ? serv->vrf_name : NULL;
+}
+
+static void ipoe_read_parent_vrf(struct ipoe_serv *serv)
+{
+	if (!iplink_get_vrf_name(serv->ifindex, serv->vrf_name))
+		serv->vrf_name[0] = 0;
+}
+#else
+static const char *ipoe_parent_vrf(struct ipoe_serv *serv)
+{
+	(void)serv;
+	return NULL;
+}
+
+static void ipoe_read_parent_vrf(struct ipoe_serv *serv)
+{
+	(void)serv;
+}
+#endif
+
 int ipoe_check_localnet(in_addr_t addr)
 {
 	struct local_net *n;
@@ -978,7 +1002,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 			if (ses->serv->opt_mode == MODE_L2)
 				ses->siaddr = ses->router;
 			else {
-				ses->siaddr = iproute_get(ses->dhcpv4_request->hdr->giaddr, NULL, NULL);
+				ses->siaddr = iproute_get(ses->dhcpv4_request->hdr->giaddr, NULL, ipoe_parent_vrf(ses->serv));
 				if (!ses->router)
 					ses->router = ses->dhcpv4_request->hdr->giaddr;
 			}
@@ -1021,7 +1045,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 			ses->router = ses->serv->opt_src;
 
 		if (!ses->router)
-			ses->router = iproute_get(ses->yiaddr, NULL, NULL);
+			ses->router = iproute_get(ses->yiaddr, NULL, ipoe_parent_vrf(ses->serv));
 
 		if (!ses->router) {
 			log_ppp_error("can't determine router address\n");
@@ -1103,7 +1127,7 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 		}*/
 
 		if (serv->opt_mode == MODE_L3)
-			iproute_get(ses->yiaddr, &gw, NULL);
+			iproute_get(ses->yiaddr, &gw, ipoe_parent_vrf(serv));
 
 		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
 			ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
@@ -1146,12 +1170,12 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	 * still talks to init_net, and ifindex there would be wrong.
 	 */
 	if (ses->ifindex != -1 && serv->opt_mode == MODE_L3 && !serv->opt_shared &&
-	    ses->ses.vrf_name && ses->ses.net == def_net) {
+	    (ses->ses.vrf_name || ipoe_parent_vrf(serv)) && ses->ses.net == def_net) {
 		addr = 0;
 		gw = 0;
 		if (ses->ses.ipv4 && ses->ses.ipv4->peer_addr != ses->yiaddr)
 			addr = ses->ses.ipv4->peer_addr;
-		iproute_get(ses->yiaddr, &gw, ses->ses.vrf_name);
+		iproute_get(ses->yiaddr, &gw, ses->ses.vrf_name ? ses->ses.vrf_name : ipoe_parent_vrf(serv));
 		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
 			ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
 			return;
@@ -1160,9 +1184,9 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
 		if (!serv->opt_ip_unnumbered)
-			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, ses->ses.vrf_name);
+			iproute_add(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, ipoe_parent_vrf(serv));
 		else
-			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, ses->ses.vrf_name);
+			iproute_add(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, ipoe_parent_vrf(serv));
 	}
 
 	if (ses->l4_redirect)
@@ -1402,9 +1426,9 @@ static void ipoe_session_finished(struct ap_session *s)
 	} else if (ses->started) {
 		if (!serv->opt_ifcfg) {
 			if (!serv->opt_ip_unnumbered)
-				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, s->vrf_name);
+				iproute_del(serv->ifindex, ses->router, ses->yiaddr, 0, conf_proto, ses->mask, 0, ipoe_parent_vrf(serv));
 			else
-				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, s->vrf_name);
+				iproute_del(serv->ifindex, serv->opt_src ?: ses->router, ses->yiaddr, 0, conf_proto, 32, 0, ipoe_parent_vrf(serv));
 		}
 	}
 
@@ -3349,6 +3373,7 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			serv->arp = NULL;
 		}
 		serv->ifindex = ifindex;
+		ipoe_read_parent_vrf(serv);
 		if ((opt_shared && !serv->opt_shared) || (!opt_shared && serv->opt_shared)) {
 			ipoe_drop_sessions(serv, NULL);
 			serv->opt_shared = opt_shared;
@@ -3470,6 +3495,9 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	pthread_mutex_init(&serv->lock, NULL);
 	strcpy(serv->ifname, ifname);
 	serv->ifindex = ifindex;
+	ipoe_read_parent_vrf(serv);
+	if (ipoe_parent_vrf(serv))
+		log_info2("ipoe: %s is in vrf %s\n", ifname, ipoe_parent_vrf(serv));
 	serv->opt_shared = opt_shared;
 	serv->opt_dhcpv4 = opt_dhcpv4;
 	serv->opt_up = opt_up;

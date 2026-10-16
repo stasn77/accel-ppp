@@ -461,6 +461,86 @@ int __export ipaddr_del_peer(int ifindex, in_addr_t addr, in_addr_t peer)
 }
 
 #ifdef HAVE_VRF
+char __export *iplink_get_vrf_name(int ifindex, char *name_buf)
+{
+	struct iplink_req {
+		struct nlmsghdr n;
+		struct ifinfomsg i;
+		char buf[4096];
+	} req;
+	struct rtattr *tb[IFLA_MAX + 1];
+	struct rtattr *li[IFLA_INFO_MAX + 1];
+	struct ifinfomsg *ifi;
+	struct rtnl_handle *rth;
+	int len;
+	uint32_t master_idx;
+	char *ret = NULL;
+
+	if (!name_buf || ifindex <= 0)
+		return NULL;
+
+	name_buf[0] = 0;
+	rth = net->rtnl_get();
+	if (!rth)
+		return NULL;
+
+	memset(&req, 0, sizeof(req) - 4096);
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	req.n.nlmsg_type = RTM_GETLINK;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
+	req.i.ifi_family = AF_UNSPEC;
+	req.i.ifi_index = ifindex;
+
+	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
+		goto out;
+
+	ifi = NLMSG_DATA(&req.n);
+	len = req.n.nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
+	if (len < 0)
+		goto out;
+
+	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
+	if (!tb[IFLA_MASTER])
+		goto out;
+
+	master_idx = *(uint32_t *)RTA_DATA(tb[IFLA_MASTER]);
+	if (!master_idx)
+		goto out;
+
+	memset(&req, 0, sizeof(req) - 4096);
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	req.n.nlmsg_type = RTM_GETLINK;
+	req.n.nlmsg_flags = NLM_F_REQUEST;
+	req.i.ifi_family = AF_UNSPEC;
+	req.i.ifi_index = master_idx;
+
+	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
+		goto out;
+
+	ifi = NLMSG_DATA(&req.n);
+	len = req.n.nlmsg_len - NLMSG_LENGTH(sizeof(*ifi));
+	if (len < 0)
+		goto out;
+
+	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
+	if (!tb[IFLA_IFNAME] || !tb[IFLA_LINKINFO])
+		goto out;
+
+	parse_rtattr_nested(li, IFLA_INFO_MAX, tb[IFLA_LINKINFO]);
+	if (!li[IFLA_INFO_KIND] || strncmp(RTA_DATA(li[IFLA_INFO_KIND]), "vrf", 4))
+		goto out;
+
+	len = RTA_PAYLOAD(tb[IFLA_IFNAME]);
+	if (len >= IFNAMSIZ)
+		len = IFNAMSIZ - 1;
+	memcpy(name_buf, RTA_DATA(tb[IFLA_IFNAME]), len);
+	name_buf[len] = 0;
+	ret = name_buf;
+out:
+	net->rtnl_put(rth);
+	return ret;
+}
+
 static int ipvrf_get_table(uint32_t *tb_id, const char *vrf_name)
 {
 	struct iplink_req {
