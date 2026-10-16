@@ -32,8 +32,11 @@ static LIST_HEAD(init_list);
 static int terminate;
 static int need_terminate;
 
-/* 0 - idle, 1 - reload requested, 2 - reload running */
+/* 0 - idle, 1 - reload requested, 2 - parsing (workers paused) */
 static int need_config_reload;
+/* Set while EV_CONFIG_RELOAD handlers run; rejects a second reload without
+ * parking all workers (parking deadlocks handlers that queue context work). */
+static int config_reload_applying;
 static void (*config_reload_notify)(int, void *);
 static void *config_reload_arg;
 
@@ -216,15 +219,39 @@ static void __config_reload(void)
 {
 	struct _triton_thread_t *t;
 	int r;
+	void (*notify)(int, void *);
+	void *arg;
 
 	log_debug2("config_reload: enter\n");
 	r = conf_reload(NULL);
-	config_reload_notify(r, config_reload_arg);
 
+	notify = config_reload_notify;
+	arg = config_reload_arg;
+	config_reload_notify = NULL;
+	config_reload_arg = NULL;
+
+	/*
+	 * Lift the worker barrier before notify/EV_CONFIG_RELOAD. While
+	 * need_config_reload != 0, threads refuse to dequeue contexts and
+	 * sit in sigwait. Module reload handlers that queue work (or need
+	 * another thread) then deadlock, and the CLI stays asleep in
+	 * triton_context_schedule() forever with "reload already in progress"
+	 * for everyone else.
+	 */
 	spin_lock(&threads_lock);
 	need_config_reload = 0;
+	config_reload_applying = 1;
 	list_for_each_entry(t, &threads, entry)
 		triton_thread_wakeup(t);
+	spin_unlock(&threads_lock);
+
+	/* Notify wakes CLI (and/or fires EV_CONFIG_RELOAD). Workers are
+	 * already runnable so handlers that queue context work can proceed. */
+	if (notify)
+		notify(r, arg);
+
+	spin_lock(&threads_lock);
+	config_reload_applying = 0;
 	spin_unlock(&threads_lock);
 	log_debug2("config_reload: exit\n");
 }
@@ -862,7 +889,7 @@ int __export triton_load_modules(const char *mod_sect)
 int __export triton_conf_reload(void (*notify)(int, void *), void *arg)
 {
 	spin_lock(&threads_lock);
-	if (need_config_reload) {
+	if (need_config_reload || config_reload_applying) {
 		spin_unlock(&threads_lock);
 		return -1;
 	}

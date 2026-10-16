@@ -347,11 +347,14 @@ struct conf_reload_req {
 static void conf_reload_notify(int r, void *arg)
 {
 	struct conf_reload_req *req = arg;
+	struct triton_context_t *ctx = req->ctx;
 
+	/* Wake CLI before module handlers. After wakeup, reload_exec may
+	 * run on another worker and free req — do not touch req afterwards. */
+	req->res = r;
+	triton_context_wakeup(ctx);
 	if (!r)
 		triton_event_fire(EV_CONFIG_RELOAD, NULL);
-	req->res = r;
-	triton_context_wakeup(req->ctx);
 }
 static int reload_exec(const char *cmd, char * const *f, int f_cnt, void *cli)
 {
@@ -364,6 +367,7 @@ static int reload_exec(const char *cmd, char * const *f, int f_cnt, void *cli)
 	 * context to another worker thread's stack before notify runs */
 	req = _malloc(sizeof(*req));
 	req->ctx = triton_context_self();
+	req->res = -1;
 
 	if (triton_conf_reload(conf_reload_notify, req)) {
 		_free(req);
