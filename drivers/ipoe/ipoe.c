@@ -2103,14 +2103,28 @@ static void __exit ipoe_fini(void)
 
 	rcu_barrier();
 
+	/* Safety net if anything survived rtnl_link_unregister/dellink. */
 	while (!list_empty(&ipoe_list2)) {
 		ses = list_entry(ipoe_list2.next, typeof(*ses), entry2);
+		if (!hlist_unhashed(&ses->entry))
+			hlist_del_rcu(&ses->entry);
+		if (!hlist_unhashed(&ses->entry3))
+			hlist_del_rcu(&ses->entry3);
 		list_del(&ses->entry2);
 
 		if (ses->link_dev)
 			dev_put(ses->link_dev);
 
 		unregister_netdev(ses->dev);
+	}
+
+	{
+		int bucket;
+
+		for (bucket = 0; bucket <= IPOE_HASH_BITS; bucket++) {
+			INIT_HLIST_HEAD(&ipoe_list[bucket]);
+			INIT_HLIST_HEAD(&ipoe_list3[bucket]);
+		}
 	}
 
 	while (!list_empty(&ipoe_list2_u)) {
