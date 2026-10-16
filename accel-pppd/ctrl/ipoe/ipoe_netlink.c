@@ -18,6 +18,7 @@
 #include "genl.h"
 #include "libnetlink.h"
 #include "iputils.h"
+#include "ap_net.h"
 
 #include "ipoe.h"
 #include "if_ipoe.h"

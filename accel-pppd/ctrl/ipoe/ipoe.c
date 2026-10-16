@@ -1180,22 +1180,30 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	ap_session_activate(&ses->ses);
 
 	/*
-	 * Exclusive L3: the parent (session iface) is now in the VRF, so
-	 * the access route to yiaddr lives in that table. Refresh gw and
-	 * keep the already-programmed link_dev. Skip other netns: genl
-	 * still talks to init_net, and ifindex there would be wrong.
+	 * Exclusive L3: after ifup the parent (session iface) may be in a
+	 * session VRF and/or netns. Re-resolve gw there and reprogram the
+	 * kernel module. ipoe_nl_modify opens genetlink via net->rtnl_open
+	 * in the thread-local net; use ses->ifindex as link_ifindex because
+	 * exclusive parent is the session iface (serv->ifindex is stale
+	 * after a netns move).
 	 */
 	if (ses->ifindex != -1 && serv->opt_mode == MODE_L3 && !serv->opt_shared &&
-	    (ses->ses.vrf_name || ipoe_parent_vrf(serv)) && ses->ses.net == def_net) {
+	    (ses->ses.vrf_name || ipoe_parent_vrf(serv))) {
+		struct ap_net *prev = net;
+		const char *vrf = ses->ses.vrf_name ? ses->ses.vrf_name : ipoe_parent_vrf(serv);
+
+		net = ses->ses.net;
 		addr = 0;
 		gw = 0;
 		if (ses->ses.ipv4 && ses->ses.ipv4->peer_addr != ses->yiaddr)
 			addr = ses->ses.ipv4->peer_addr;
-		iproute_get(ses->yiaddr, &gw, ses->ses.vrf_name ? ses->ses.vrf_name : ipoe_parent_vrf(serv));
-		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, serv->ifindex, ses->hwaddr)) {
+		iproute_get(ses->yiaddr, &gw, vrf);
+		if (ipoe_nl_modify(ses->ifindex, ses->yiaddr, addr, gw, ses->ifindex, ses->hwaddr)) {
+			net = prev;
 			ap_session_terminate(&ses->ses, TERM_NAS_ERROR, 1);
 			return;
 		}
+		net = prev;
 	}
 
 	if (ses->ifindex == -1 && !serv->opt_ifcfg) {
