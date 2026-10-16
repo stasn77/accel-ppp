@@ -1161,6 +1161,22 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	ipoe_stat_move(&ipoe_stat.starting, &ipoe_stat.active);
 	ses->started = 1;
 
+	/*
+	 * Exclusive + NAS-Port-Id netns moves the parent iface out of the
+	 * service net during ifup. Send DHCPACK first, while serv->dhcpv4
+	 * still works in def_net; renewals use ses->dhcpv4 created after
+	 * the move.
+	 */
+	if (ses->dhcpv4_request && !serv->opt_shared &&
+	    ses->ses.ifname_rename && strchr(ses->ses.ifname_rename, '/')) {
+		dhcpv4_send_reply(DHCPACK, ses->dhcpv4 ?: serv->dhcpv4, ses->dhcpv4_request,
+				  ses->yiaddr, ses->siaddr, ses->router, ses->mask,
+				  ses->lease_time, ses->renew_time, ses->rebind_time,
+				  ses->dhcpv4_relay_reply);
+		dhcpv4_packet_free(ses->dhcpv4_request);
+		ses->dhcpv4_request = NULL;
+	}
+
 	ap_session_activate(&ses->ses);
 
 	/*
@@ -1205,10 +1221,22 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	}
 
 	if (ses->dhcpv4_request) {
-		if (ses->ses.state == AP_STATE_ACTIVE)
-			dhcpv4_send_reply(DHCPACK, ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
+		if (ses->ses.state == AP_STATE_ACTIVE) {
+			struct ap_net *net_save = net;
+			struct dhcpv4_serv *dhcp = ses->dhcpv4 ?: ses->serv->dhcpv4;
+
+			/*
+			 * Shared IPoE keeps the DHCP socket on the parent in
+			 * the service net. After NAS-Port-Id netns move,
+			 * thread-local net is the session ns — send from the
+			 * parent net so the client still sees the ACK.
+			 */
+			if (!ses->dhcpv4 && ses->serv->dhcpv4 && net != def_net)
+				net = def_net;
+			dhcpv4_send_reply(DHCPACK, dhcp, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
 					  ses->lease_time, ses->renew_time, ses->rebind_time, ses->dhcpv4_relay_reply);
-		else
+			net = net_save;
+		} else
 			dhcpv4_send_nak(ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, SESSION_TERMINATED);
 
 		dhcpv4_packet_free(ses->dhcpv4_request);
@@ -1259,8 +1287,14 @@ static void ipoe_session_keepalive(struct dhcpv4_packet *pack)
 	}
 
 	if (ses->ses.state == AP_STATE_ACTIVE) {
-		dhcpv4_send_reply(DHCPACK, ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
+		struct ap_net *net_save = net;
+		struct dhcpv4_serv *dhcp = ses->dhcpv4 ?: ses->serv->dhcpv4;
+
+		if (!ses->dhcpv4 && ses->serv->dhcpv4 && net != def_net)
+			net = def_net;
+		dhcpv4_send_reply(DHCPACK, dhcp, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
 				  ses->lease_time, ses->renew_time, ses->rebind_time, ses->dhcpv4_relay_reply);
+		net = net_save;
 		if (ses->timer.tpd)
 			triton_timer_mod(&ses->timer, 0);
 	} else
@@ -2257,8 +2291,14 @@ static void ipoe_ses_recv_dhcpv4_relay(struct dhcpv4_packet *pack)
 		if (ses->ses.state == AP_STATE_STARTING)
 			__ipoe_session_activate(ses);
 		else {
-			dhcpv4_send_reply(DHCPACK, ses->dhcpv4 ?: ses->serv->dhcpv4, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
+			struct ap_net *net_save = net;
+			struct dhcpv4_serv *dhcp = ses->dhcpv4 ?: ses->serv->dhcpv4;
+
+			if (!ses->dhcpv4 && ses->serv->dhcpv4 && net != def_net)
+				net = def_net;
+			dhcpv4_send_reply(DHCPACK, dhcp, ses->dhcpv4_request, ses->yiaddr, ses->siaddr, ses->router, ses->mask,
 					  ses->lease_time, ses->renew_time, ses->rebind_time, ses->dhcpv4_relay_reply);
+			net = net_save;
 			if (ses->timer.tpd)
 				triton_timer_mod(&ses->timer, 0);
 		}
