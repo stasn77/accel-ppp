@@ -28,6 +28,7 @@ Features
 * TBF/HTB shaping and clsact policing
 * Telnet and TCP command-line interfaces
 * Optional SNMP support as a master agent or AgentX subagent
+* Optional HTTP metrics in Prometheus or JSON format
 
 EAP authentication and PPP compression are not supported.
 
@@ -43,13 +44,15 @@ Building the daemon requires:
 * OpenSSL development files
 * PCRE2 development files
 
-Kernel headers are also required when building the optional PPTP, IPoE, or VLAN
+Kernel headers are also required when building the optional PPPoSEQ, IPoE, or VLAN
 monitoring kernel modules. Optional features require their corresponding
 development libraries:
 
 * Net-SNMP for NETSNMP=TRUE
 * PostgreSQL client libraries for LOG_PGSQL_DEPRECATED=TRUE
-* Lua for LUA=TRUE or a specific Lua version such as LUA=5.3
+* Lua 5.1 development files for LUA=TRUE. A numeric value such as LUA=5.3
+  requests at least that Lua version through CMake's FindLua module; it does
+  not enforce an exact version.
 
 
 Building and installing
@@ -57,11 +60,25 @@ Building and installing
 
 Use an out-of-tree build directory:
 
+The commands below require CMake 3.15 or newer: -S/-B were added in 3.13,
+and --install was added in 3.15. The project itself still supports CMake 3.10.
+
     cmake -S . -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr/local
     cmake --build build
     sudo cmake --install build
+
+For CMake 3.10 through 3.14, use the build-directory form and the generated
+install target instead:
+
+    mkdir -p build
+    cd build
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local ..
+    cmake --build .
+    sudo cmake --build . --target install
+
+Run the remaining examples from the repository root.
 
 Useful build options:
 
@@ -86,6 +103,12 @@ kernel:
       -DBUILD_VLAN_MON_DRIVER=TRUE \
       -DKDIR="/usr/src/linux-headers-$(uname -r)"
     cmake --build build
+
+For SSTP's optional PPPoSEQ transport, also set BUILD_PPPOSEQ_DRIVER=TRUE
+and install the ppposeq kernel module. SSTP tries to load it at startup;
+ppp-mode=auto uses it if available and otherwise selects async PPP.
+Changing [sstp] ppp-mode or switching from async to PPPoSEQ requires a daemon
+restart. See "man 5 accel-ppp.conf" for the transport options.
 
 
 Configuration
@@ -253,5 +276,14 @@ More information
 * Source and issue tracker: https://github.com/accel-ppp/accel-ppp
 * Additional RADIUS notes: docs/
 * Email: contact@accel-ppp.org
-* ICQ: 337258064
 * Jabber: dima@accel-ppp.org
+
+
+Community resources
+===================
+
+These Telegram groups are unofficial community resources:
+
+* [English](https://t.me/accel_ppp_en)
+* [Brazilian Portuguese](https://t.me/accel_ppp_br)
+* [Russian](https://t.me/accel_ppp)
