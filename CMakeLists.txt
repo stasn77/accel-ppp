@@ -6,6 +6,8 @@ endif ()
 
 project(accel-ppp C)
 
+include(CTest)
+
 SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fno-strict-aliasing -D_GNU_SOURCE -fPIC -rdynamic -Wno-unused-result")
 ADD_DEFINITIONS(-DOPENSSL_API_COMPAT=0x10100000L)
 
@@ -58,7 +60,7 @@ IF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 	)
 	STRING(STRIP "${ACCEL_PPP_VERSION}" ACCEL_PPP_VERSION)
 ELSE (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
-	SET (ACCEL_PPP_VERSION 1.14.0)
+	SET (ACCEL_PPP_VERSION 1.15.0)
 ENDIF (EXISTS ${CMAKE_HOME_DIRECTORY}/.git AND NOT IGNORE_GIT)
 
 # we must include cpack.cmake after generating the ACCEL_PPP_VERSION variable
@@ -101,8 +103,6 @@ if (BUILD_VLAN_MON_DRIVER)
 endif ()
 
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
-
-include(CTest)
 
 if (BUILD_TESTING)
 	add_test(

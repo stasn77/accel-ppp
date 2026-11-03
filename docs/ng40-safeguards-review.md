@@ -95,7 +95,8 @@ fixes and this integration are by **Denys Fedoryshchenko**.
 
 ## Validation
 
-Run from the repository root:
+The following commands and results record validation when these safeguards
+were integrated. Run the commands from the repository root at that revision:
 
 ```sh
 cmake -S . -B /tmp/accel-ppp-ng40-build -DCMAKE_BUILD_TYPE=Debug \
@@ -104,6 +105,12 @@ cmake --build /tmp/accel-ppp-ng40-build -j 8
 sh tests/unit/run_safeguards.sh /tmp/accel-ppp-ng40-build
 git diff --check
 ```
+
+For current checkouts, see the [focused unit test instructions](../tests/README.md#focused-unit-tests).
+The DHCPv6 fixture now uses the shared IPv6 DNS storage and its production
+implementation. It checks safe truncation of oversized DNS replies and
+failure propagation when domain-list options exhaust reply space. The
+sanitizer workflow also runs the complete standalone safeguard suite.
 
 Build, the existing IPv6 DNS selection test, and five standalone suites passed. Tests compile production code with
 small external-service stubs. DHCPv6, RADIUS, VRF, and pool tests use ASan,
