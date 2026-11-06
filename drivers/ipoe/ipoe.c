@@ -1026,7 +1026,7 @@ static int ipoe_ctrl_attached(void)
 /* Sessions are created through IPOE_CMD_CREATE, which also sets up the
  * private state.  A device made by rtnetlink would have none of it, so
  * refuse 'ip link add ... type ipoe' explicitly. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,13,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 static int ipoe_newlink(struct net_device *dev,
 			struct rtnl_newlink_params *params,
 			struct netlink_ext_ack *extack)
@@ -1108,10 +1108,12 @@ static void ipoe_netdev_setup(struct net_device *dev)
 	dev->iflink = 0;
 #endif
 	dev->addr_len = ETH_ALEN;
+	/* HAVE_NETNS_* come from the Makefile header probe; the version
+	 * checks are only a fallback when the probe could not run. */
 /*
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
+#if defined(HAVE_NETNS_IMMUTABLE) || LINUX_VERSION_CODE >= KERNEL_VERSION(6,15,0)
 	dev->netns_immutable = true;
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
+#elif defined(HAVE_NETNS_LOCAL) || LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0)
 	dev->netns_local = true;
 #else
 	dev->features  |= NETIF_F_NETNS_LOCAL;
