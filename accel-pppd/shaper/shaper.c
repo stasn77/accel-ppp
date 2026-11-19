@@ -109,7 +109,7 @@ static LIST_HEAD(time_range_list);
 static int time_range_id = 0;
 
 #define MAX_IDX 65536
-static long *idx_map;
+static unsigned long *idx_map;
 
 static void shaper_ctx_close(struct triton_context_t *);
 static struct triton_context_t shaper_ctx = {
@@ -121,22 +121,22 @@ static int alloc_idx(int init)
 {
 	int i, p = 0;
 
-	init %= MAX_IDX;
+	init = (unsigned int)init % MAX_IDX;
 
 	pthread_rwlock_wrlock(&shaper_lock);
-	if (idx_map[init / __BITS_PER_LONG] & (1 << (init % __BITS_PER_LONG))) {
+	if (idx_map[init / __BITS_PER_LONG] & (1UL << (init % __BITS_PER_LONG))) {
 		i = init / __BITS_PER_LONG;
 		p = (init % __BITS_PER_LONG) + 1;
 	} else {
 		for (i = init / __BITS_PER_LONG; i < MAX_IDX / __BITS_PER_LONG; i++) {
-			p = ffs(idx_map[i]);
+			p = ffsl(idx_map[i]);
 			if (p)
 				break;
 		}
 
 		if (!p) {
 			for (i = 0; i < init / __BITS_PER_LONG; i++) {
-				p = ffs(idx_map[i]);
+				p = ffsl(idx_map[i]);
 				if (p)
 					break;
 			}
@@ -144,7 +144,7 @@ static int alloc_idx(int init)
 	}
 
 	if (p)
-		idx_map[i] &= ~(1 << (p - 1));
+		idx_map[i] &= ~(1UL << (p - 1));
 
 	pthread_rwlock_unlock(&shaper_lock);
 
@@ -156,7 +156,7 @@ static int alloc_idx(int init)
 
 static void free_idx(int idx)
 {
-	idx_map[idx / __BITS_PER_LONG] |= 1 << (idx % __BITS_PER_LONG);
+	idx_map[idx / __BITS_PER_LONG] |= 1UL << (idx % __BITS_PER_LONG);
 }
 
 static struct shaper_pd_t *find_pd(struct ap_session *ses, int create)
@@ -448,60 +448,77 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 	if (!pd)
 		return;
 
+	pthread_rwlock_wrlock(&shaper_lock);
 	check_radius_attrs(pd, ev->reply);
+	pthread_rwlock_unlock(&shaper_lock);
 }
 
 static void ev_radius_coa(struct ev_radius_t *ev)
 {
 	struct shaper_pd_t *pd = find_pd(ev->ses, 0);
+	int down_speed, up_speed, down_burst, up_burst;
+	int change = 0;
 
 	if (!pd) {
 		ev->res = -1;
 		return;
 	}
 
-	if (!check_radius_attrs(pd, ev->request))
+	pthread_rwlock_wrlock(&shaper_lock);
+	if (!check_radius_attrs(pd, ev->request)) {
+		pthread_rwlock_unlock(&shaper_lock);
 		return;
+	}
 
-	if (pd->temp_down_speed || pd->temp_up_speed)
+	if (pd->temp_down_speed || pd->temp_up_speed) {
+		pthread_rwlock_unlock(&shaper_lock);
 		return;
+	}
 
 	if (!pd->cur_tr) {
 		if (pd->down_speed || pd->up_speed) {
 			pd->down_speed = 0;
 			pd->up_speed = 0;
+			pthread_rwlock_unlock(&shaper_lock);
 			if (conf_verbose)
 				log_ppp_info2("shaper: removed shaper\n");
 			remove_limiter(ev->ses, pd->idx);
-		}
+		} else
+			pthread_rwlock_unlock(&shaper_lock);
 		return;
 	}
 
 	if (pd->down_speed != pd->cur_tr->down_speed || pd->up_speed != pd->cur_tr->up_speed) {
-		pd->down_speed = pd->cur_tr->down_speed;
-		pd->up_speed = pd->cur_tr->up_speed;
+		down_speed = pd->cur_tr->down_speed;
+		up_speed = pd->cur_tr->up_speed;
+		down_burst = pd->cur_tr->down_burst;
+		up_burst = pd->cur_tr->up_burst;
+		pd->down_speed = down_speed;
+		pd->up_speed = up_speed;
+		change = 1;
+	}
+	pthread_rwlock_unlock(&shaper_lock);
 
-		if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
+	if (!change)
+		return;
+
+	if (pd->idx && remove_limiter(ev->ses, pd->idx)) {
+		ev->res = -1;
+		return;
+	}
+
+	if (down_speed > 0 || up_speed > 0) {
+		if (!pd->idx)
+			pd->idx = alloc_idx(pd->ses->ifindex);
+
+		if (install_limiter(ev->ses, down_speed, down_burst, up_speed, up_burst, pd->idx)) {
 			ev->res = -1;
 			return;
 		}
-
-		if (pd->down_speed > 0 || pd->up_speed > 0) {
-			if (!pd->idx)
-				pd->idx = alloc_idx(pd->ses->ifindex);
-
-			if (install_limiter(ev->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst, pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx)) {
-				ev->res= -1;
-				return;
-			} else {
-				if (conf_verbose)
-					log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", pd->down_speed, pd->up_speed);
-			}
-		} else {
-			if (conf_verbose)
-				log_ppp_info2("shaper: removed shaper\n");
-		}
-	}
+		if (conf_verbose)
+			log_ppp_info2("shaper: changed shaper %i/%i (Kbit)\n", down_speed, up_speed);
+	} else if (conf_verbose)
+		log_ppp_info2("shaper: removed shaper\n");
 }
 #endif
 
@@ -519,11 +536,13 @@ static void ev_shaper(struct ev_shaper_t *ev)
 	parse_string(ev->val, ATTR_DOWN, &down_speed, &down_burst, &tr_id);
 	parse_string(ev->val, ATTR_UP, &up_speed, &up_burst, &tr_id);
 
+	pthread_rwlock_wrlock(&shaper_lock);
 	tr_pd = get_tr_pd(pd, tr_id);
 	tr_pd->down_speed = down_speed;
 	tr_pd->down_burst = down_burst;
 	tr_pd->up_speed = up_speed;
 	tr_pd->up_burst = up_burst;
+	pthread_rwlock_unlock(&shaper_lock);
 
 	if (temp_down_speed || temp_up_speed) {
 		pd->temp_down_speed = temp_down_speed;
@@ -643,7 +662,7 @@ static void shaper_change(struct shaper_pd_t *pd)
 		pd->down_speed = pd->temp_down_speed;
 		pd->up_speed = pd->temp_up_speed;
 		install_limiter(pd->ses, pd->temp_down_speed, 0, pd->temp_up_speed, 0, pd->idx);
-	} else if (pd->cur_tr->down_speed || pd->cur_tr->up_speed) {
+	} else if (pd->cur_tr && (pd->cur_tr->down_speed || pd->cur_tr->up_speed)) {
 		pd->down_speed = pd->cur_tr->down_speed;
 		pd->up_speed = pd->cur_tr->up_speed;
 		install_limiter(pd->ses, pd->cur_tr->down_speed, pd->cur_tr->down_burst, pd->cur_tr->up_speed, pd->cur_tr->up_burst, pd->idx);
@@ -690,7 +709,7 @@ static int shaper_change_exec(const char *cmd, char * const *f, int f_cnt, void 
 		temp_up_speed = up_speed;
 	}
 
-	pthread_rwlock_rdlock(&shaper_lock);
+	pthread_rwlock_wrlock(&shaper_lock);
 	list_for_each_entry(pd, &shaper_list, entry) {
 		if (all || !strcmp(f[2], pd->ses->ifname)) {
 			if (temp) {
@@ -917,11 +936,11 @@ static struct time_range_t *parse_range(time_t t, const char *val)
 	end_tm = begin_tm;
 
 	endptr = strptime(endptr + 1, "%H:%M", &begin_tm);
-	if (*endptr != '-')
+	if (!endptr || *endptr != '-')
 		return NULL;
 
 	endptr = strptime(endptr + 1, "%H:%M", &end_tm);
-	if (*endptr)
+	if (!endptr || *endptr)
 		return NULL;
 
 	r = _malloc(sizeof(*r));
@@ -1199,7 +1218,7 @@ static void init(void)
 
 	idx_map = mmap(NULL, MAX_IDX/8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 	memset(idx_map, 0xff, MAX_IDX/8);
-	idx_map[0] &= ~3;
+	idx_map[0] &= ~3UL;
 
 	opt = conf_get_opt("shaper", "ifb");
 	if (opt && init_ifb(opt))

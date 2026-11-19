@@ -426,6 +426,10 @@ static struct ipoe_session *ipoe_session_lookup(struct ipoe_serv *serv, struct d
 		return res;
 
 	list_for_each_entry(ses, &serv->sessions, entry) {
+		/* First loop left opt82_match at 0 for the MAC hit; reset so the
+		 * Option 82 comparisons below are not dead code. */
+		opt82_match = 1;
+
 		if (agent_circuit_id && !ses->agent_circuit_id)
 			continue;
 
@@ -955,6 +959,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 		if (ses->UP && !ses->ses.ipv4) {
 			log_ppp_error("ipoe: no address specified\n");
 			ap_session_terminate(&ses->ses, TERM_NAS_REQUEST, 1);
+			return;
 		}
 	}
 
@@ -1095,7 +1100,7 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 	uint32_t addr, gw = 0;
 	struct ipoe_serv *serv = ses->serv;
 
-	if (ses->terminating || ses->started)
+	if (ses->terminating || ses->ses.terminating || ses->started)
 		return;
 
 	log_ppp_debug("ipoe: activate session hwaddr=%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -1480,8 +1485,10 @@ static void ipoe_session_finished(struct ap_session *s)
 	if (ses->relay_addr && ses->serv->dhcpv4_relay)
 		dhcpv4_relay_send_release(ses->serv->dhcpv4_relay, ses->hwaddr, ses->xid, ses->yiaddr, ses->client_id, ses->relay_agent, ses->serv->ifname, conf_agent_remote_id, conf_link_selection);
 
-	if (ses->dhcpv4)
+	if (ses->dhcpv4) {
 		dhcpv4_free(ses->dhcpv4);
+		ses->dhcpv4 = NULL;
+	}
 
 	triton_event_fire(EV_CTRL_FINISHED, s);
 
@@ -1866,7 +1873,9 @@ static void ipoe_serv_disc_timer(struct triton_timer_t *t)
 			break;
 		}
 
+		pthread_mutex_lock(&serv->lock);
 		ipoe_session_create_up(serv, NULL, NULL, &d->arph);
+		pthread_mutex_unlock(&serv->lock);
 
 		list_del(&d->entry);
 		mempool_free(d);
@@ -2044,7 +2053,11 @@ static int check_notify(struct ipoe_serv *serv, struct dhcpv4_packet *pack)
 
 	list_for_each_entry(ses, &serv->sessions, entry) {
 		if (ses->xid == pack->hdr->xid && memcmp(pack->hdr->chaddr, ses->hwaddr, ETH_ALEN) == 0) {
-			if (w < ses->weight || ses->weight == 0 || (w == ses->weight && memcmp(serv->hwaddr, opt->data + 8, ETH_ALEN) < 0)) {
+			/* weight 0 means clustering is unused; never terminate on notify */
+			if (ses->weight &&
+			    (w < ses->weight ||
+			     (w == ses->weight &&
+			      memcmp(serv->hwaddr, opt->data + 8, ETH_ALEN) < 0))) {
 				log_debug("ipoe: terminate %s by weight %u (%u)\n", ses->ses.ifname, w, ses->weight);
 				triton_context_call(&ses->ctx, (triton_event_func)__terminate, &ses->ses);
 			}
@@ -2474,8 +2487,10 @@ static void ipoe_session_create_auto(struct ipoe_serv *serv)
 
 	triton_context_register(&ses->ctx, &ses->ses);
 
+	pthread_mutex_lock(&serv->lock);
 	list_add_tail(&ses->entry, &serv->sessions);
 	serv->sess_cnt++;
+	pthread_mutex_unlock(&serv->lock);
 
 	triton_context_call(&ses->ctx, (triton_event_func)ipoe_session_start, ses);
 

@@ -278,7 +278,7 @@ skip_it:
 		}
 		if (msglen) {
 			log_debug("libnetlink: ""!!!Remnant of size %d\n", msglen);
-			exit(1);
+			return -1;
 		}
 	}
 }
@@ -298,7 +298,7 @@ int __export rtnl_dump_filter(struct rtnl_handle *rth,
 }
 
 int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
-	      unsigned groups, struct nlmsghdr *answer,
+	      unsigned groups, struct nlmsghdr *answer, size_t answer_len,
 	      rtnl_filter_t junk,
 	      void *jarg, int ignore_einval)
 {
@@ -356,7 +356,7 @@ int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
 		}
 		if (msg.msg_namelen != sizeof(nladdr)) {
 			log_debug("libnetlink: ""sender address length == %d\n", msg.msg_namelen);
-			exit(1);
+			return -1;
 		}
 		for (h = (struct nlmsghdr*)buf; status >= sizeof(*h); ) {
 			int err;
@@ -369,7 +369,7 @@ int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
 					return -1;
 				}
 				log_debug("libnetlink: ""!!!malformed message: len=%d\n", len);
-				exit(1);
+				return -1;
 			}
 
 			if (nladdr.nl_pid != peer ||
@@ -393,8 +393,14 @@ int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
 				} else {
 					errno = -err->error;
 					if (errno == 0 || (errno == EINVAL && ignore_einval)) {
-						if (answer)
+						if (answer) {
+							if (h->nlmsg_len > answer_len) {
+								log_debug("libnetlink: ""reply too long (%u > %zu)\n",
+									h->nlmsg_len, answer_len);
+								return -1;
+							}
 							memcpy(answer, h, h->nlmsg_len);
+						}
 						return 0;
 					}
 					if (!ignore_einval)
@@ -403,6 +409,11 @@ int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
 				return -1;
 			}
 			if (answer) {
+				if (h->nlmsg_len > answer_len) {
+					log_debug("libnetlink: ""reply too long (%u > %zu)\n",
+						h->nlmsg_len, answer_len);
+					return -1;
+				}
 				memcpy(answer, h, h->nlmsg_len);
 				return 0;
 			}
@@ -418,7 +429,7 @@ int __export rtnl_talk(struct rtnl_handle *rtnl, struct nlmsghdr *n, pid_t peer,
 		}
 		if (status) {
 			log_debug("libnetlink: ""!!!Remnant of size %d\n", status);
-			exit(1);
+			return -1;
 		}
 	}
 }
