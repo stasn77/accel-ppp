@@ -471,16 +471,28 @@ static void ipoe_update_link_headroom(struct net_device *dev,
 	dev->needed_headroom = hlen > ETH_HLEN ? hlen - ETH_HLEN : 0;
 }
 
-/* Clear and drop the cached link device after readers leave RCU sections.
- * Caller must serialize writers (ipoe_wlock / rtnl teardown). */
-static void ipoe_link_dev_clear(struct ipoe_session *ses)
+/* Detach cached link_dev without waiting. Caller must synchronize_rcu()
+ * before the returned device is put (or use ipoe_link_dev_clear()). */
+static struct net_device *ipoe_link_dev_detach(struct ipoe_session *ses)
 {
 	struct net_device *link_dev = ses->link_dev;
 
 	if (!link_dev)
-		return;
+		return NULL;
 
 	rcu_assign_pointer(ses->link_dev, NULL);
+	return link_dev;
+}
+
+/* Clear and drop the cached link device after readers leave RCU sections.
+ * Caller must serialize writers (ipoe_wlock / rtnl teardown). */
+static void ipoe_link_dev_clear(struct ipoe_session *ses)
+{
+	struct net_device *link_dev = ipoe_link_dev_detach(ses);
+
+	if (!link_dev)
+		return;
+
 	synchronize_rcu();
 	dev_put(link_dev);
 }
@@ -1246,7 +1258,8 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	int ida;
 #endif
 
-	if (link_dev && link_dev->type != ARPHRD_ETHER)
+	if (link_dev && (link_dev->type != ARPHRD_ETHER ||
+			 link_dev->header_ops == &ipoe_hard_header_ops))
 		goto failed;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
@@ -1265,7 +1278,7 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 #endif
 	if (dev == NULL) {
 		r = -ENOMEM;
-		goto failed;
+		goto failed_ida;
 	}
 
 	dev_net_set(dev, &init_net);
@@ -1348,10 +1361,11 @@ static int ipoe_create(__be32 peer_addr, __be32 addr, __be32 gw, struct net_devi
 	return r;
 
 failed_free:
+	free_netdev(dev);
+failed_ida:
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 	ida_free(&ses_ida, ida);
 #endif
-	free_netdev(dev);
 failed:
 	if (link_dev)
 		dev_put(link_dev);
@@ -1422,7 +1436,8 @@ static int ipoe_nl_cmd_create(struct sk_buff *skb, struct genl_info *info)
 		link_dev = dev_get_by_index(genl_info_net(info), ifindex);
 		if (!link_dev)
 			return -EINVAL;
-		if (link_dev->type != ARPHRD_ETHER) {
+		if (link_dev->type != ARPHRD_ETHER ||
+		    link_dev->header_ops == &ipoe_hard_header_ops) {
 			dev_put(link_dev);
 			return -EINVAL;
 		}
@@ -1546,8 +1561,10 @@ out_unlock:
 static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 {
 	struct ipoe_session *ses;
+	struct net_device **put_devs = NULL;
 	LIST_HEAD(list);
 	LIST_HEAD(kill_list);
+	int n_links = 0, n_put = 0;
 
 	down(&ipoe_wlock);
 
@@ -1557,6 +1574,8 @@ static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 		ses->dying = 1;
 		ipoe_hlist_del_rcu(&ses->entry);
 		ipoe_hlist_del_rcu(&ses->entry3);
+		if (ses->link_dev)
+			n_links++;
 	}
 
 	up(&ipoe_wlock);
@@ -1564,17 +1583,39 @@ static int ipoe_nl_cmd_flush(struct sk_buff *skb, struct genl_info *info)
 	if (list_empty(&list))
 		return 0;
 
-	/* a single grace period covers the whole batch */
+	/* one grace period for the list unlinks above */
 	synchronize_rcu();
 
+	if (n_links)
+		put_devs = kmalloc_array(n_links, sizeof(*put_devs), GFP_KERNEL);
+
 	list_for_each_entry(ses, &list, entry2) {
+		struct net_device *ld;
+
 		while (atomic_read(&ses->refs))
 			schedule_timeout_uninterruptible(1);
 
-		ipoe_link_dev_clear(ses);
+		ld = ipoe_link_dev_detach(ses);
+		if (ld) {
+			if (put_devs)
+				put_devs[n_put++] = ld;
+			else {
+				/* OOM fallback: pay per-session grace period */
+				synchronize_rcu();
+				dev_put(ld);
+			}
+		}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
 		ida_free(&ses_ida, ses->ida);
 #endif
+	}
+
+	if (put_devs) {
+		/* one grace period for all link_dev readers */
+		synchronize_rcu();
+		while (n_put--)
+			dev_put(put_devs[n_put]);
+		kfree(put_devs);
 	}
 
 	rtnl_lock();
@@ -1596,6 +1637,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 	struct ipoe_session *ses, *ses1;
 	int ifindex;
 	int need_rtnl = 0;
+	int update_link = 0;
 	__be32 peer_addr;
 
 	if (!info->attrs[IPOE_ATTR_IFINDEX])
@@ -1634,13 +1676,22 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			link_dev = dev_get_by_index(genl_info_net(info), ifindex);
 			if (!link_dev)
 				goto out_unlock;
-			if (link_dev->type != ARPHRD_ETHER) {
-				dev_put(link_dev);
+			if (link_dev->type != ARPHRD_ETHER ||
+			    link_dev->header_ops == &ipoe_hard_header_ops) {
 				ret = -EINVAL;
 				goto out_unlock;
 			}
 		}
-		lookup_dev = link_dev;
+		/* Same link as already cached: drop the extra ref and skip
+		 * entry3/hwaddr churn + synchronize_rcu(). */
+		if (link_dev == ses->link_dev) {
+			if (link_dev)
+				dev_put(link_dev);
+			link_dev = NULL;
+		} else {
+			lookup_dev = link_dev;
+			update_link = 1;
+		}
 	}
 
 	if (info->attrs[IPOE_ATTR_PEER_ADDR]) {
@@ -1650,8 +1701,6 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			if (ses1) {
 				atomic_dec(&ses1->refs);
 				if (ses1 != ses) {
-					if (link_dev)
-						dev_put(link_dev);
 					ret = -EEXIST;
 					goto out_unlock;
 				}
@@ -1671,7 +1720,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			ses->dev->flags &= ~IFF_UP;
 	}
 
-	if (info->attrs[IPOE_ATTR_LINK_IFINDEX]) {
+	if (update_link) {
 		int entry3_removed = 0;
 
 		if (!hlist_unhashed(&ses->entry3)) {
@@ -1703,6 +1752,7 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 			hlist_add_head_rcu(&ses->entry3,
 					   &ipoe_list3[eth_hash(ses->hwaddr)]);
 		ipoe_update_link_headroom(dev, link_dev);
+		link_dev = NULL; /* ownership transferred to ses */
 	}
 
 
@@ -1738,6 +1788,8 @@ static int ipoe_nl_cmd_modify(struct sk_buff *skb, struct genl_info *info)
 	ret = 0;
 
 out_unlock:
+	if (link_dev)
+		dev_put(link_dev);
 	up(&ipoe_wlock);
 	if (need_rtnl)
 		rtnl_unlock();
