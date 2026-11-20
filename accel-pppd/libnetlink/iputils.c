@@ -496,7 +496,7 @@ char __export *iplink_get_vrf_name(int ifindex, char *name_buf)
 	req.i.ifi_family = AF_UNSPEC;
 	req.i.ifi_index = ifindex;
 
-	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
+	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, sizeof(req), NULL, NULL, 0) < 0)
 		goto out;
 
 	ifi = NLMSG_DATA(&req.n);
@@ -519,7 +519,7 @@ char __export *iplink_get_vrf_name(int ifindex, char *name_buf)
 	req.i.ifi_family = AF_UNSPEC;
 	req.i.ifi_index = master_idx;
 
-	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, NULL, NULL, 0) < 0)
+	if (rtnl_talk(rth, &req.n, 0, 0, &req.n, sizeof(req), NULL, NULL, 0) < 0)
 		goto out;
 
 	ifi = NLMSG_DATA(&req.n);
